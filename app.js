@@ -169,7 +169,7 @@ async function renderApp(user) {
         </div>
         <div>
           <label>Mi unidad/sector hoy</label>
-          <input id="myUnitToday" placeholder="Ej: Dental" value="${(myProfile?.unit || "")}" />
+          <input id="mysectorToday" placeholder="Ej: Dental" value="${(myProfile?.sector || "")}" />
         </div>
       </div>
       <div class="btns">
