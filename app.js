@@ -1,9 +1,13 @@
 // Firebase SDKs desde CDN (compatible con GitHub Pages)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-import { getFirestore } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
-// Config Firebase
+// 🔥 Config Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -17,25 +21,57 @@ const firebaseConfig = {
 // Init
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
 
-// Debug visual
-document.body.insertAdjacentHTML(
-  "beforeend",
-  "<p style='color:green'>🔥 Firebase cargado correctamente</p>"
-);
+// UI básica
+document.body.innerHTML = `
+  <h1>Estacionamiento KW</h1>
+
+  <div id="login">
+    <input id="email" type="email" placeholder="Email" /><br><br>
+    <input id="password" type="password" placeholder="Contraseña" /><br><br>
+    <button id="btnLogin">Ingresar</button>
+  </div>
+
+  <div id="panel" style="display:none">
+    <p id="userInfo"></p>
+    <button id="btnLogout">Cerrar sesión</button>
+  </div>
+
+  <p id="msg"></p>
+`;
+
+// Login
+document.getElementById("btnLogin").onclick = async () => {
+  const email = document.getElementById("email").value;
+  const password = document.getElementById("password").value;
+
+  try {
+    await signInWithEmailAndPassword(auth, email, password);
+    document.getElementById("msg").innerText = "✅ Login correcto";
+  } catch (e) {
+    document.getElementById("msg").innerText = "❌ Error: " + e.message;
+  }
+};
+
+// Logout
+document.getElementById("btnLogout").onclick = async () => {
+  await signOut(auth);
+};
 
 // Auth listener
-onAuthStateChanged(auth, user => {
+onAuthStateChanged(auth, (user) => {
   if (user) {
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      `<p>✅ Sesión activa: ${user.email}</p>`
-    );
+    document.getElementById("login").style.display = "none";
+    document.getElementById("panel").style.display = "block";
+    document.getElementById("userInfo").innerText =
+      `👤 Sesión activa: ${user.email}`;
   } else {
-    document.body.insertAdjacentHTML(
-      "beforeend",
-      "<p>ℹ️ No hay sesión activa</p>"
-    );
+    document.getElementById("login").style.display = "block";
+    document.getElementById("panel").style.display = "none";
   }
 });
+
+// Registrar Service Worker
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js");
+}
