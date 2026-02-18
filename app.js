@@ -4,7 +4,7 @@ import {
   getAuth,
   signInWithEmailAndPassword,
   onAuthStateChanged,
-  signOut,
+  signOut
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import {
   getFirestore,
@@ -16,10 +16,10 @@ import {
   query,
   where,
   getDocs,
-  serverTimestamp,
+  serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-// 🔧 TU CONFIG
+// 🔧 TU CONFIG (la que me diste)
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -27,14 +27,16 @@ const firebaseConfig = {
   projectId: "estacionamiento-kw",
   storageBucket: "estacionamiento-kw.firebasestorage.app",
   messagingSenderId: "474380177810",
-  appId: "1:474380177810:web:9448efb41c8682e8a4714b",
+  appId: "1:474380177810:web:9448efb41c8682e8a4714b"
 };
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Helpers
+// ===== Helpers =====
+const el = (id) => document.getElementById(id);
+
 const todayStr = () => {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -49,30 +51,70 @@ const normPlate = (s) =>
     .replace(/\s+/g, "")
     .replace(/[^A-Z0-9]/g, "");
 
-const el = (id) => document.getElementById(id);
+// TTL: borra mañana a las 03:00 (más seguro que medianoche)
+function expiresTomorrowAt3AM() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(3, 0, 0, 0);
+  return d; // Firestore acepta Date como timestamp
+}
 
+// WhatsApp
+function whatsappLink(phone, msg) {
+  let p = String(phone || "").replace(/\D/g, "");
+  if (p.startsWith("56")) {
+    // ok
+  } else if (p.length === 9 && p.startsWith("9")) {
+    p = "56" + p;
+  }
+  const text = encodeURIComponent(msg || "");
+  return `https://wa.me/${p}?text=${text}`;
+}
+
+// ===== UI base =====
 function baseStyles() {
   const style = document.createElement("style");
   style.textContent = `
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px;background:#f8fafc;color:#0f172a}
-    h1{font-size:28px;margin:8px 0 6px}
+    h1{font-size:30px;margin:8px 0 6px}
     .sub{opacity:.75;margin:0 0 16px}
     .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px;margin:12px 0}
     label{display:block;font-size:12px;opacity:.75;margin:10px 0 6px}
-    input,select{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
+    input{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
     button{padding:12px 14px;border-radius:12px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:15px}
     button.secondary{background:#fff;color:#0f172a}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-    .ok{color:#16a34a;font-weight:600}
-    .warn{color:#b45309;font-weight:600}
+    .ok{color:#16a34a;font-weight:700}
+    .warn{color:#b45309;font-weight:700}
     .muted{opacity:.75}
     .pill{display:inline-block;padding:6px 10px;border:1px solid #cbd5e1;border-radius:999px;margin:6px 6px 0 0}
     a.wa{display:inline-block;margin-top:10px;text-decoration:none}
+    .tiny{font-size:12px;opacity:.7;margin-top:8px}
   `;
   document.head.appendChild(style);
 }
 
+// ===== Firestore queries =====
+// Busca perfil por patente dentro de users.plates (array-contains)
+async function findUserByPlate(plate) {
+  const qy = query(collection(db, "users"), where("plates", "array-contains", plate));
+  const snap = await getDocs(qy);
+  if (snap.empty) return null;
+  const docu = snap.docs[0];
+  return { id: docu.id, ...docu.data() };
+}
+
+// Trae check-in del usuario para HOY (si existe)
+async function getTodayCheckin(uid) {
+  const id = `${uid}_${todayStr()}`;
+  const ref = doc(db, "checkins", id);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return snap.data();
+}
+
+// ===== Screens =====
 function renderLogin() {
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
@@ -96,38 +138,12 @@ function renderLogin() {
   el("btnLogin").onclick = async () => {
     el("loginMsg").textContent = "Entrando...";
     try {
-      await signInWithEmailAndPassword(
-        auth,
-        el("email").value.trim(),
-        el("pass").value
-      );
+      await signInWithEmailAndPassword(auth, el("email").value.trim(), el("pass").value);
     } catch (e) {
-      el("loginMsg").textContent =
-        "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
+      el("loginMsg").textContent = "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
       console.error(e);
     }
   };
-}
-
-function whatsappLink(phone, msg) {
-  let p = (phone || "").replace(/\D/g, "");
-  if (p.startsWith("56")) {
-    // ok
-  } else if (p.length === 9 && p.startsWith("9")) {
-    p = "56" + p;
-  }
-  const text = encodeURIComponent(msg || "");
-  return `https://wa.me/${p}?text=${text}`;
-}
-
-// Busca perfil por patente dentro de users.plates (array-contains)
-async function findUserByPlate(plate) {
-  const qy = query(collection(db, "users"), where("plates", "array-contains", plate));
-  const snap = await getDocs(qy);
-  if (snap.empty) return null;
-
-  const docu = snap.docs[0];
-  return { id: docu.id, ...docu.data() };
 }
 
 async function renderApp(user) {
@@ -135,7 +151,7 @@ async function renderApp(user) {
   const uid = user.uid;
   const today = todayStr();
 
-  // Perfil del usuario actual (doc id = email)
+  // Perfil propio (doc id = email)
   let myProfile = null;
   try {
     const meRef = doc(db, "users", email);
@@ -145,13 +161,25 @@ async function renderApp(user) {
     console.warn("No pude leer users/<email>", e);
   }
 
+  // Check-in de hoy (si existe)
+  let myTodayCheckin = null;
+  try {
+    myTodayCheckin = await getTodayCheckin(uid);
+  } catch (e) {
+    console.warn("No pude leer checkin de hoy", e);
+  }
+
+  const defaultPlate = (myProfile?.plates?.[0] || "");
+  const defaultSectorProfile = (myProfile?.sector || "");          // sector “base” (perfil)
+  const defaultSectorToday = (myTodayCheckin?.sectorToday || "");  // sector “hoy” (check-in)
+
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
     <div class="muted">👤 Sesión activa: <b>${email}</b></div>
 
     <div class="btns" style="margin:10px 0 2px;">
       <button class="secondary" id="btnLogout">Cerrar sesión</button>
-      <span class="ok" id="statusOk">✅ Login correcto</span>
+      <span class="ok">✅ Login correcto</span>
     </div>
 
     <div class="card">
@@ -166,20 +194,28 @@ async function renderApp(user) {
 
     <div class="card">
       <h3 style="margin:0 0 10px;">📍 Check-in (hoy)</h3>
+
       <div class="row">
         <div>
           <label>Mi patente</label>
-          <input id="myPlate" placeholder="Ej: KHDC46" value="${(myProfile?.plates?.[0] || "")}" />
+          <input id="myPlate" placeholder="Ej: KHDC46" value="${defaultPlate}" />
         </div>
         <div>
           <label>Mi sector hoy</label>
-          <input id="mysectorToday" placeholder="Ej: Dental" value="${(myProfile?.sector || "")}" />
+          <input id="mySectorToday" placeholder="Ej: Dental / Farmacia" value="${defaultSectorToday || defaultSectorProfile}" />
         </div>
       </div>
+
       <div class="btns">
         <button id="btnCheckin">Hacer check-in</button>
+        <button class="secondary" id="btnSeeToday">Ver mi check-in de hoy</button>
       </div>
+
       <div id="checkinRes" class="muted" style="margin-top:10px;"></div>
+
+      <div class="tiny">
+        📌 Nota: el <b>sector del perfil</b> (users.sector) puede ser distinto del <b>sector de hoy</b> (checkins.sectorToday).
+      </div>
     </div>
 
     <div class="card">
@@ -187,7 +223,7 @@ async function renderApp(user) {
       <div class="row">
         <div>
           <label>Mi patente (quien bloquea)</label>
-          <input id="blockerPlate" placeholder="Ej: KHDC46" value="${(myProfile?.plates?.[0] || "")}" />
+          <input id="blockerPlate" placeholder="Ej: KHDC46" value="${defaultPlate}" />
         </div>
         <div>
           <label>Patente bloqueada</label>
@@ -204,7 +240,7 @@ async function renderApp(user) {
 
   el("btnLogout").onclick = () => signOut(auth);
 
-  // Buscar patente
+  // ===== Buscar patente =====
   el("btnSearch").onclick = async () => {
     const plate = normPlate(el("searchPlate").value);
     el("searchRes").textContent = "Buscando...";
@@ -223,22 +259,20 @@ async function renderApp(user) {
 
       const name = found.name || "(sin nombre)";
       const phone = found.phone || "(sin teléfono)";
-      // ✅ ahora mostramos SECTOR (y por si acaso, si alguien tiene "unit" antiguo, lo usa igual)
-      const sector = found.sector || found.unit || "(sin unidad)";
+      const sectorProfile = found.sector || "(sin sector en perfil)"; // OJO: viene de users.sector
+      const plates = Array.isArray(found.plates) ? found.plates : [];
 
       const msg = `Hola ${name}. Te contacto por Estacionamiento KW: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
-      const wa = String(phone).includes("sin") ? null : whatsappLink(phone, msg);
+      const wa = (String(phone).includes("sin") ? null : whatsappLink(phone, msg));
 
       el("searchRes").innerHTML = `
         <div><b>${name}</b></div>
         <div>📞 ${phone}</div>
-        <div>🏥 ${sector}</div>
-        <div class="muted" style="margin-top:6px;">Patentes registradas: ${(found.plates || []).map(p=>`<span class="pill">${p}</span>`).join("")}</div>
-        ${
-          wa
-            ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>`
-            : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`
-        }
+        <div>🏥 Perfil: ${sectorProfile}</div>
+        <div class="muted" style="margin-top:6px;">
+          Patentes registradas: ${plates.map(p=>`<span class="pill">${p}</span>`).join("")}
+        </div>
+        ${wa ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>` : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`}
       `;
     } catch (e) {
       console.error(e);
@@ -246,31 +280,32 @@ async function renderApp(user) {
     }
   };
 
-  // ✅ Check-in (GUARDA sectorToday)
+  // ===== Check-in =====
   el("btnCheckin").onclick = async () => {
     const plate = normPlate(el("myPlate").value);
-    const sectorToday = (el("mysectorToday").value || "").trim();
+    const sectorToday = (el("mySectorToday").value || "").trim();
 
     el("checkinRes").textContent = "Guardando check-in...";
+
     if (!plate || !sectorToday) {
       el("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o sector.</span>`;
       return;
     }
 
     try {
+      // 1 check-in por usuario por día (se reemplaza si lo haces de nuevo)
       const id = `${uid}_${today}`;
-      await setDoc(
-        doc(db, "checkins", id),
-        {
-          uid,
-          email,
-          plate,
-          sectorToday, // ✅
-          date: today,
-          ts: serverTimestamp(),
-        },
-        { merge: true }
-      );
+
+      await setDoc(doc(db, "checkins", id), {
+        uid,
+        email,
+        plate,
+        sectorToday,
+        date: today,
+        ts: serverTimestamp(),
+        // ✅ TTL: Firestore lo borrará automáticamente mañana
+        expiresAt: expiresTomorrowAt3AM()
+      }, { merge: true });
 
       el("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${plate} · ${sectorToday}</span>`;
     } catch (e) {
@@ -279,12 +314,34 @@ async function renderApp(user) {
     }
   };
 
-  // Agregar bloqueo
+  // Ver mi check-in de hoy
+  el("btnSeeToday").onclick = async () => {
+    el("checkinRes").textContent = "Leyendo check-in de hoy...";
+    try {
+      const data = await getTodayCheckin(uid);
+      if (!data) {
+        el("checkinRes").innerHTML = `<span class="muted">No hay check-in guardado hoy.</span>`;
+        return;
+      }
+      el("checkinRes").innerHTML = `
+        <div class="ok">✅ Check-in hoy:</div>
+        <div>🚗 ${data.plate}</div>
+        <div>🏥 ${data.sectorToday}</div>
+        <div class="tiny">Se auto-borra (TTL) aprox mañana 03:00</div>
+      `;
+    } catch (e) {
+      console.error(e);
+      el("checkinRes").innerHTML = `<span class="warn">❌ Error leyendo check-in. Revisa Rules.</span>`;
+    }
+  };
+
+  // ===== Bloqueos =====
   el("btnAddBlock").onclick = async () => {
     const blockerPlate = normPlate(el("blockerPlate").value);
     const blockedPlate = normPlate(el("blockedPlate").value);
 
     el("blocksRes").textContent = "Guardando bloqueo...";
+
     if (!blockerPlate || !blockedPlate) {
       el("blocksRes").innerHTML = `<span class="warn">⚠️ Falta mi patente o la bloqueada.</span>`;
       return;
@@ -297,7 +354,7 @@ async function renderApp(user) {
         blockerPlate,
         blockedPlate,
         date: today,
-        ts: serverTimestamp(),
+        ts: serverTimestamp()
       });
 
       el("blocksRes").innerHTML = `<span class="ok">✅ Bloqueo agregado: ${blockerPlate} → ${blockedPlate}</span>`;
@@ -308,7 +365,6 @@ async function renderApp(user) {
     }
   };
 
-  // Ver bloqueos de hoy
   el("btnListBlocks").onclick = async () => {
     el("blocksRes").textContent = "Cargando bloqueos de hoy...";
     try {
@@ -324,16 +380,11 @@ async function renderApp(user) {
         return;
       }
 
-      const items = snap.docs.map((d) => d.data());
+      const items = snap.docs.map(d => d.data());
       el("blocksRes").innerHTML = `
         <div class="muted">Bloqueos hoy (${today}):</div>
-        ${items
-          .map(
-            (it) =>
-              `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`
-          )
-          .join("")}
-        <div class="muted" style="margin-top:10px;">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
+        ${items.map(it => `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`).join("")}
+        <div class="tiny">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
       `;
     } catch (e) {
       console.error(e);
@@ -342,7 +393,7 @@ async function renderApp(user) {
   };
 }
 
-// Inicio
+// ===== Start =====
 baseStyles();
 
 onAuthStateChanged(auth, (user) => {
