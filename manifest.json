@@ -1,8 +1,8 @@
 {
   "name": "Estacionamiento KW",
-  "short_name": "KW Parking",
-  "start_url": ".",
-  "scope": ".",
+  "short_name": "Parking KW",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",
