@@ -1,17 +1,15 @@
-const CACHE_NAME = "estacionamiento-kw-v1";
-
-const FILES_TO_CACHE = [
-  "./",
-  "./index.html",
-  "./app.js",
-  "./manifest.json"
-];
+const CACHE = "kw-parking-v1";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(FILES_TO_CACHE);
-    })
+    caches.open(CACHE).then((cache) =>
+      cache.addAll([
+        "./",
+        "./index.html",
+        "./app.js",
+        "./manifest.json"
+      ])
+    )
   );
   self.skipWaiting();
 });
@@ -19,13 +17,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      )
+      Promise.all(keys.map((k) => (k !== CACHE ? caches.delete(k) : null)))
     )
   );
   self.clients.claim();
@@ -33,8 +25,6 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   event.respondWith(
-    caches.match(event.request).then((res) => {
-      return res || fetch(event.request);
-    })
+    caches.match(event.request).then((cached) => cached || fetch(event.request))
   );
 });
