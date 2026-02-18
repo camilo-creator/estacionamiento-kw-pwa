@@ -3,6 +3,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
 import {
   getAuth,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
   signOut
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
@@ -11,18 +12,17 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   addDoc,
   collection,
   query,
   where,
   getDocs,
   serverTimestamp,
-  deleteDoc
+  Timestamp
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-/** =======================
- *  CONFIG FIREBASE
- *  ======================= */
+/** ========= CONFIG ========= **/
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -33,13 +33,17 @@ const firebaseConfig = {
   appId: "1:474380177810:web:9448efb41c8682e8a4714b"
 };
 
+// Dueños (solo para UI). La seguridad REAL la dan las Rules con UID.
+const OWNER_EMAILS = new Set([
+  "camilodelajara@gmail.com"
+]);
+
+/** ========= INIT ========= **/
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-/** =======================
- *  HELPERS
- *  ======================= */
+/** ========= HELPERS ========= **/
 const el = (id) => document.getElementById(id);
 
 const todayStr = () => {
@@ -50,15 +54,22 @@ const todayStr = () => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+const endOfToday = () => {
+  const d = new Date();
+  d.setHours(23, 59, 59, 0);
+  return d;
+};
+
+const normEmail = (s) => (s || "").trim().toLowerCase();
+
 const normPlate = (s) =>
   (s || "")
     .toUpperCase()
     .replace(/\s+/g, "")
     .replace(/[^A-Z0-9]/g, "");
 
-// WhatsApp link (Chile-friendly)
 function whatsappLink(phone, msg) {
-  let p = (phone || "").replace(/\D/g, "");
+  let p = String(phone || "").replace(/\D/g, "");
   if (p.startsWith("56")) {
     // ok
   } else if (p.length === 9 && p.startsWith("9")) {
@@ -68,139 +79,307 @@ function whatsappLink(phone, msg) {
   return `https://wa.me/${p}?text=${text}`;
 }
 
-function baseStyles() {
-  const style = document.createElement("style");
-  style.textContent = `
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px;background:#f8fafc;color:#0f172a}
-    h1{font-size:28px;margin:8px 0 6px}
-    .sub{opacity:.75;margin:0 0 16px}
-    .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px;margin:12px 0}
-    label{display:block;font-size:12px;opacity:.75;margin:10px 0 6px}
-    input,select{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
-    button{padding:12px 14px;border-radius:12px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:15px}
-    button.secondary{background:#fff;color:#0f172a}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center}
-    .ok{color:#16a34a;font-weight:700}
-    .warn{color:#b45309;font-weight:800}
-    .muted{opacity:.75}
-    .pill{display:inline-block;padding:6px 10px;border:1px solid #cbd5e1;border-radius:999px;margin:6px 6px 0 0}
-    a.wa{display:inline-block;margin-top:10px;text-decoration:none}
-    h3{margin:0 0 10px}
-  `;
-  document.head.appendChild(style);
+async function getMyUserDoc(uid) {
+  const ref = doc(db, "users", uid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
 }
 
-/** =======================
- *  FIRESTORE QUERIES
- *  ======================= */
-
-// Busca perfil por patente dentro de users.plates (array-contains)
 async function findUserByPlate(plate) {
   const qy = query(collection(db, "users"), where("plates", "array-contains", plate));
   const snap = await getDocs(qy);
   if (snap.empty) return null;
-  const docu = snap.docs[0];
-  return { id: docu.id, ...docu.data() };
+  const d = snap.docs[0];
+  return { id: d.id, ...d.data() }; // id = uid del dueño del perfil
 }
 
-// Busca check-in de HOY por patente
-async function findTodayCheckinByPlate(plate) {
-  const t = todayStr();
+async function getTodayCheckinByPlate(plate) {
   const qy = query(
     collection(db, "checkins"),
-    where("date", "==", t),
-    where("plate", "==", plate)
+    where("plate", "==", plate),
+    where("date", "==", todayStr())
   );
   const snap = await getDocs(qy);
   if (snap.empty) return null;
-
-  // Si hubiese más de 1, toma el más nuevo por ts si viene
-  let best = snap.docs[0].data();
-  for (const d of snap.docs) {
-    const data = d.data();
-    if (data?.ts && best?.ts && data.ts.seconds > best.ts.seconds) best = data;
-  }
-  return best;
+  // si hay más de uno (no debería), tomamos el primero
+  return snap.docs[0].data();
 }
 
-// “Borrado diario” (limpieza SIMPLE desde el cliente):
-// borra checkins anteriores a hoy que pertenezcan al usuario actual.
-// (Para borrado global de todos, se necesita TTL o Function programada.)
-async function cleanupMyOldCheckins(uid) {
-  try {
-    const t = todayStr();
-    const qy = query(collection(db, "checkins"), where("uid", "==", uid));
-    const snap = await getDocs(qy);
-    if (snap.empty) return;
-
-    for (const d of snap.docs) {
-      const data = d.data();
-      if (data?.date && data.date !== t) {
-        await deleteDoc(doc(db, "checkins", d.id));
-      }
-    }
-  } catch (e) {
-    // si Rules no permiten, no rompemos la app
-    console.warn("cleanupMyOldCheckins() no pudo borrar (rules?)", e);
-  }
-}
-
-/** =======================
- *  UI: LOGIN
- *  ======================= */
-function renderLogin() {
+/** ========= UI RENDER ========= **/
+function renderAuthScreen() {
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
-    <p class="sub">Inicia sesión para usar la app.</p>
+    <p class="sub">Acceso personal CESFAM</p>
 
-    <div class="card">
-      <label>Email</label>
-      <input id="email" type="email" placeholder="tu@correo.cl" autocomplete="username" />
-
-      <label>Contraseña</label>
-      <input id="pass" type="password" placeholder="••••••••" autocomplete="current-password" />
-
-      <div class="btns">
-        <button id="btnLogin">Entrar</button>
-      </div>
-
-      <p id="loginMsg" class="muted" style="margin-top:10px;"></p>
+    <div class="tabs">
+      <button class="tab active" id="tabLogin">Iniciar sesión</button>
+      <button class="tab" id="tabRegister">Crear cuenta</button>
     </div>
+
+    <div class="card" id="authCard"></div>
+  `;
+
+  const setTab = (which) => {
+    el("tabLogin").classList.toggle("active", which === "login");
+    el("tabRegister").classList.toggle("active", which === "register");
+    if (which === "login") renderLoginForm();
+    else renderRegisterWizardStep1();
+  };
+
+  el("tabLogin").onclick = () => setTab("login");
+  el("tabRegister").onclick = () => setTab("register");
+
+  renderLoginForm();
+}
+
+function renderLoginForm() {
+  el("authCard").innerHTML = `
+    <h3 style="margin:0 0 10px;">Iniciar sesión</h3>
+
+    <label>Email</label>
+    <input id="email" type="email" placeholder="tu@correo.cl" autocomplete="username" />
+
+    <label>Contraseña</label>
+    <input id="pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+
+    <div class="btns">
+      <button id="btnLogin">Iniciar sesión</button>
+    </div>
+    <p id="loginMsg" class="muted" style="margin-top:10px;"></p>
   `;
 
   el("btnLogin").onclick = async () => {
     el("loginMsg").textContent = "Entrando...";
     try {
-      await signInWithEmailAndPassword(auth, el("email").value.trim(), el("pass").value);
-      // onAuthStateChanged hace el resto
+      await signInWithEmailAndPassword(auth, normEmail(el("email").value), el("pass").value);
     } catch (e) {
-      el("loginMsg").textContent = "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
       console.error(e);
+      el("loginMsg").textContent = "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
     }
   };
 }
 
-/** =======================
- *  UI: APP
- *  ======================= */
-async function renderApp(user) {
-  const email = (user.email || "").toLowerCase();
+/** ===== Registro por pasos =====
+  Paso 1: email/clave
+  Paso 2: nombre/rut/teléfono
+  Paso 3: patentes + sector habitual + T&C -> crea perfil estado=pending
+**/
+let REG = {
+  email: "",
+  pass: "",
+  name: "",
+  rut: "",
+  phone: "",
+  plates: [""],
+  sector: ""
+};
+
+const SECTORES = [
+  "Dirección","Dental","Farmacia","Ambulancia","UAC","Sector Rojo","Sector Amarillo",
+  "Transversal","Box Psicosocial","Sala ERA","Vacunatorio","Telesalud","Oirs/Sau",
+  "Esterilización","Bodega de Alimentos","Bodega de Farmacia","Dependencia Severa",
+  "Sala de Psicomotricidad","Sala de Estimulación DSM","Apoyo Clínico","Ex SIGGES"
+];
+
+function renderRegisterWizardStep1() {
+  el("authCard").innerHTML = `
+    <h3 style="margin:0 0 10px;">Crear cuenta (Paso 1/3)</h3>
+
+    <label>Email</label>
+    <input id="rEmail" type="email" placeholder="tu@gmail.com" />
+
+    <label>Contraseña</label>
+    <input id="rPass" type="password" placeholder="mínimo 6 caracteres" />
+
+    <label>Confirmar contraseña</label>
+    <input id="rPass2" type="password" placeholder="repite tu contraseña" />
+
+    <div class="btns">
+      <button id="btnNext1">Siguiente</button>
+    </div>
+    <p id="rMsg1" class="muted" style="margin-top:10px;"></p>
+  `;
+
+  el("btnNext1").onclick = () => {
+    const email = normEmail(el("rEmail").value);
+    const pass = el("rPass").value;
+    const pass2 = el("rPass2").value;
+
+    if (!email.includes("@")) return el("rMsg1").textContent = "⚠️ Email inválido.";
+    if (!pass || pass.length < 6) return el("rMsg1").textContent = "⚠️ Clave mínimo 6 caracteres.";
+    if (pass !== pass2) return el("rMsg1").textContent = "⚠️ Las claves no coinciden.";
+
+    REG.email = email;
+    REG.pass = pass;
+    renderRegisterWizardStep2();
+  };
+}
+
+function renderRegisterWizardStep2() {
+  el("authCard").innerHTML = `
+    <h3 style="margin:0 0 10px;">Datos personales (Paso 2/3)</h3>
+
+    <label>Nombre completo</label>
+    <input id="rName" placeholder="Ej: María González Pérez" />
+
+    <label>RUT (sin puntos ni guión)</label>
+    <input id="rRut" placeholder="Ej: 123456789" />
+
+    <label>Teléfono (9 dígitos)</label>
+    <input id="rPhone" placeholder="Ej: 912345678" />
+
+    <div class="btns">
+      <button class="secondary" id="btnBack2">Anterior</button>
+      <button id="btnNext2">Siguiente</button>
+    </div>
+    <p id="rMsg2" class="muted" style="margin-top:10px;"></p>
+  `;
+
+  el("btnBack2").onclick = () => renderRegisterWizardStep1();
+  el("btnNext2").onclick = () => {
+    const name = (el("rName").value || "").trim();
+    const rut = (el("rRut").value || "").replace(/\D/g, "");
+    const phone = (el("rPhone").value || "").replace(/\D/g, "");
+
+    if (name.length < 5) return el("rMsg2").textContent = "⚠️ Escribe tu nombre completo.";
+    if (rut.length < 7) return el("rMsg2").textContent = "⚠️ RUT inválido.";
+    if (phone.length < 8) return el("rMsg2").textContent = "⚠️ Teléfono inválido.";
+
+    REG.name = name;
+    REG.rut = rut;
+    REG.phone = phone;
+    renderRegisterWizardStep3();
+  };
+}
+
+function renderRegisterWizardStep3() {
+  const sectorOptions = SECTORES.map(s => `<option value="${s}">${s}</option>`).join("");
+
+  el("authCard").innerHTML = `
+    <h3 style="margin:0 0 10px;">Vehículos (Paso 3/3)</h3>
+
+    <label>Patente(s)</label>
+    <div id="platesWrap"></div>
+    <div class="btns">
+      <button class="secondary" id="btnAddPlate">+ Agregar otra patente</button>
+    </div>
+
+    <label>Unidad/Sector donde trabaja (habitual)</label>
+    <select id="rSector">
+      <option value="">Selecciona tu unidad</option>
+      ${sectorOptions}
+    </select>
+
+    <label style="margin-top:12px;">
+      <input type="checkbox" id="rTos" /> Acepto Términos y Condiciones
+    </label>
+
+    <div class="btns">
+      <button class="secondary" id="btnBack3">Anterior</button>
+      <button id="btnFinish">Completar registro</button>
+    </div>
+
+    <p id="rMsg3" class="muted" style="margin-top:10px;"></p>
+  `;
+
+  const renderPlates = () => {
+    el("platesWrap").innerHTML = REG.plates.map((p, idx) => `
+      <input
+        style="margin-bottom:10px"
+        data-idx="${idx}"
+        class="plateInput"
+        placeholder="Ej: ABCD12"
+        value="${p}"
+      />
+    `).join("");
+
+    document.querySelectorAll(".plateInput").forEach(inp => {
+      inp.oninput = (e) => {
+        const i = Number(e.target.getAttribute("data-idx"));
+        REG.plates[i] = e.target.value;
+      };
+    });
+  };
+
+  renderPlates();
+
+  el("btnAddPlate").onclick = () => {
+    REG.plates.push("");
+    renderPlates();
+  };
+
+  el("btnBack3").onclick = () => renderRegisterWizardStep2();
+
+  el("btnFinish").onclick = async () => {
+    const sector = (el("rSector").value || "").trim();
+    const tos = el("rTos").checked;
+
+    const plates = REG.plates.map(normPlate).filter(Boolean);
+    const uniquePlates = [...new Set(plates)];
+
+    if (uniquePlates.length < 1) return el("rMsg3").textContent = "⚠️ Agrega al menos 1 patente.";
+    if (!sector) return el("rMsg3").textContent = "⚠️ Selecciona tu sector habitual.";
+    if (!tos) return el("rMsg3").textContent = "⚠️ Debes aceptar T&C.";
+
+    REG.sector = sector;
+    el("rMsg3").textContent = "Creando cuenta...";
+
+    try {
+      // 1) Crear usuario Auth
+      const cred = await createUserWithEmailAndPassword(auth, REG.email, REG.pass);
+
+      // 2) Crear perfil (pendiente)
+      const uid = cred.user.uid;
+      await setDoc(doc(db, "users", uid), {
+        uid,
+        email: REG.email,
+        name: REG.name,
+        rut: REG.rut,
+        phone: REG.phone,
+        plates: uniquePlates,
+        sector: REG.sector,         // habitual
+        estado: "pendiente",        // requiere aprobación
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      el("rMsg3").innerHTML = `<span class="ok">✅ Registro enviado. Quedas “pendiente de aprobación”.</span>`;
+      // al quedar logueado, onAuthStateChanged lo redirige a pantalla pendiente
+    } catch (e) {
+      console.error(e);
+      el("rMsg3").textContent = "❌ Error creando cuenta. ¿Email ya existe? ¿Auth habilitado?";
+    }
+  };
+}
+
+/** ===== App ===== **/
+function renderPending(user, profile) {
+  document.body.innerHTML = `
+    <h1>Estacionamiento KW</h1>
+    <p class="sub">Cuenta pendiente de autorización</p>
+
+    <div class="card">
+      <div>👤 <b>${profile?.name || user.email}</b></div>
+      <div class="muted">Email: ${user.email}</div>
+      <div class="muted">UID: <b>${user.uid}</b></div>
+
+      <p style="margin-top:12px;">
+        Tu registro está <b>pendiente</b>. El dueño de la app debe activarte.
+      </p>
+
+      <div class="btns">
+        <button class="secondary" id="btnLogout">Cerrar sesión</button>
+      </div>
+    </div>
+  `;
+  el("btnLogout").onclick = () => signOut(auth);
+}
+
+function renderApp(user, myProfile) {
+  const email = user.email || "";
   const uid = user.uid;
   const today = todayStr();
-
-  // Limpieza “diaria” simple (del usuario)
-  cleanupMyOldCheckins(uid);
-
-  // Perfil propio (doc id = email)
-  let myProfile = null;
-  try {
-    const meRef = doc(db, "users", email);
-    const meSnap = await getDoc(meRef);
-    if (meSnap.exists()) myProfile = meSnap.data();
-  } catch (e) {
-    console.warn("No pude leer users/<email>", e);
-  }
+  const isOwner = OWNER_EMAILS.has(normEmail(email));
 
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
@@ -208,11 +387,11 @@ async function renderApp(user) {
 
     <div class="btns" style="margin:10px 0 2px;">
       <button class="secondary" id="btnLogout">Cerrar sesión</button>
-      <span class="ok" id="statusOk">✅ Login correcto</span>
+      <span class="ok">✅ Activo</span>
     </div>
 
     <div class="card">
-      <h3>🔎 Buscar por patente</h3>
+      <h3 style="margin:0 0 10px;">🔎 Buscar por patente</h3>
       <label>Patente</label>
       <input id="searchPlate" placeholder="Ej: KHDC46" />
       <div class="btns">
@@ -222,7 +401,7 @@ async function renderApp(user) {
     </div>
 
     <div class="card">
-      <h3>📍 Check-in (hoy)</h3>
+      <h3 style="margin:0 0 10px;">📍 Check-in (hoy)</h3>
       <div class="row">
         <div>
           <label>Mi patente</label>
@@ -237,10 +416,11 @@ async function renderApp(user) {
         <button id="btnCheckin">Hacer check-in</button>
       </div>
       <div id="checkinRes" class="muted" style="margin-top:10px;"></div>
+      <div class="muted" style="margin-top:8px;">Tu sector habitual: <b>${myProfile?.sector || "(sin sector)"}</b></div>
     </div>
 
     <div class="card">
-      <h3>🚗 Estoy bloqueando (hoy)</h3>
+      <h3 style="margin:0 0 10px;">🚗 Estoy bloqueando (hoy)</h3>
       <div class="row">
         <div>
           <label>Mi patente (quien bloquea)</label>
@@ -257,17 +437,34 @@ async function renderApp(user) {
       </div>
       <div id="blocksRes" class="muted" style="margin-top:10px;"></div>
     </div>
+
+    ${isOwner ? `
+    <div class="card">
+      <h3 style="margin:0 0 10px;">🛡️ Admin (Dueño)</h3>
+      <div class="muted">Tu UID (cópialo para Rules): <b>${uid}</b></div>
+
+      <label style="margin-top:10px;">Buscar pendientes por email</label>
+      <input id="pendingEmail" placeholder="alguien@gmail.com" />
+      <div class="btns">
+        <button id="btnFindPending">Buscar</button>
+        <button class="secondary" id="btnActivate">Activar</button>
+      </div>
+      <div id="adminRes" class="muted" style="margin-top:10px;"></div>
+    </div>
+    ` : `
+    <div class="card">
+      <h3 style="margin:0 0 10px;">🔧 Debug</h3>
+      <div class="muted">Tu UID: <b>${uid}</b></div>
+    </div>
+    `}
   `;
 
   el("btnLogout").onclick = () => signOut(auth);
 
-  /** =======================
-   *  BUSCAR POR PATENTE
-   *  ======================= */
+  // Buscar patente
   el("btnSearch").onclick = async () => {
     const plate = normPlate(el("searchPlate").value);
     el("searchRes").textContent = "Buscando...";
-
     if (!plate) {
       el("searchRes").innerHTML = `<span class="warn">⚠️ Escribe una patente.</span>`;
       return;
@@ -276,34 +473,19 @@ async function renderApp(user) {
     try {
       const found = await findUserByPlate(plate);
       if (!found) {
-        el("searchRes").innerHTML = `<span class="warn">⚠️ No encontré esa patente en users.</span>`;
+        el("searchRes").innerHTML = `<span class="warn">⚠️ No encontré esa patente.</span>`;
         return;
       }
 
       const name = found.name || "(sin nombre)";
       const phone = found.phone || "(sin teléfono)";
-      const sectorHabitual = found.sector || "(sin sector habitual)";
+      const habitual = found.sector || "(sin sector habitual)";
 
-      // 🔥 check-in de HOY para esa patente
-      let checkinHoy = null;
-      try {
-        checkinHoy = await findTodayCheckinByPlate(plate);
-      } catch (e) {
-        console.warn("No pude leer checkin de hoy", e);
-      }
-      const sectorHoy = checkinHoy?.sectorToday || null;
+      // check-in de HOY por patente
+      const chk = await getTodayCheckinByPlate(plate);
+      const sectorHoy = chk?.sectorToday || null;
 
-      let sectorHTML = "";
-      if (!sectorHoy) {
-        sectorHTML = `<div>🏥 Habitual: <b>${sectorHabitual}</b> <span class="muted">(sin check-in hoy)</span></div>`;
-      } else if ((sectorHoy || "").toLowerCase() !== (sectorHabitual || "").toLowerCase()) {
-        sectorHTML = `
-          <div class="warn">⚠️ Hoy está en: <b>${sectorHoy}</b></div>
-          <div class="muted">Habitual: ${sectorHabitual}</div>
-        `;
-      } else {
-        sectorHTML = `<div class="ok">✅ Hoy: <b>${sectorHoy}</b></div><div class="muted">Habitual: ${sectorHabitual}</div>`;
-      }
+      const distinto = (sectorHoy && habitual && sectorHoy.toLowerCase() !== habitual.toLowerCase());
 
       const msg = `Hola ${name}. Te contacto por Estacionamiento KW: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
       const wa = (String(phone).includes("sin") ? null : whatsappLink(phone, msg));
@@ -311,11 +493,10 @@ async function renderApp(user) {
       el("searchRes").innerHTML = `
         <div><b>${name}</b></div>
         <div>📞 ${phone}</div>
-        ${sectorHTML}
-        <div class="muted" style="margin-top:6px;">
-          Patentes registradas: ${(found.plates || []).map(p=>`<span class="pill">${p}</span>`).join("")}
-        </div>
-        ${wa ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>` : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`}
+        <div>🏥 Sector habitual: <b>${habitual}</b></div>
+        ${sectorHoy ? `<div>📍 Check-in hoy: <b>${sectorHoy}</b> ${distinto ? `<span class="warn"> (distinto al habitual)</span>` : ""}</div>` : `<div class="muted">📍 Sin check-in hoy</div>`}
+        <div class="muted" style="margin-top:6px;">Patentes: ${(found.plates || []).map(p=>`<span class="pill">${p}</span>`).join("")}</div>
+        ${wa ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>` : `<div class="warn" style="margin-top:8px;">⚠️ Falta teléfono para WhatsApp.</div>`}
       `;
     } catch (e) {
       console.error(e);
@@ -323,50 +504,42 @@ async function renderApp(user) {
     }
   };
 
-  /** =======================
-   *  CHECK-IN
-   *  ======================= */
+  // Check-in (hoy) + TTL
   el("btnCheckin").onclick = async () => {
     const plate = normPlate(el("myPlate").value);
     const sectorToday = (el("mySectorToday").value || "").trim();
-
     el("checkinRes").textContent = "Guardando check-in...";
 
     if (!plate || !sectorToday) {
-      el("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o sector.</span>`;
+      el("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o sector hoy.</span>`;
       return;
     }
 
     try {
-      // doc id estable por usuario+fecha → “se borra solo” por lógica (se reemplaza cada día)
+      // 1 check-in por usuario/día (se sobreescribe)
       const id = `${uid}_${today}`;
-      await setDoc(
-        doc(db, "checkins", id),
-        {
-          uid,
-          email,
-          plate,
-          sectorToday,
-          date: today,
-          ts: serverTimestamp()
-        },
-        { merge: true }
-      );
+      await setDoc(doc(db, "checkins", id), {
+        uid,
+        email,
+        plate,
+        sectorToday,                 // ✅ lo que el usuario puso HOY
+        date: today,
+        ts: serverTimestamp(),
+        // ✅ TTL: Firestore borrará el doc cuando pase expiresAt (si activas TTL en consola)
+        expiresAt: Timestamp.fromDate(endOfToday())
+      }, { merge: true });
 
       el("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${plate} · ${sectorToday}</span>`;
     } catch (e) {
       console.error(e);
-      el("checkinRes").innerHTML = `<span class="warn">❌ No pude guardar check-in. Revisa Rules.</span>`;
+      el("checkinRes").innerHTML = `<span class="warn">❌ No pude guardar check-in. Revisa Rules/TTL.</span>`;
     }
   };
 
-  /** =======================
-   *  BLOQUEOS
-   *  ======================= */
+  // Bloqueos
   el("btnAddBlock").onclick = async () => {
     const blockerPlate = normPlate(el("blockerPlate").value);
     const blockedPlate = normPlate(el("blockedPlate").value);
-
     el("blocksRes").textContent = "Guardando bloqueo...";
 
     if (!blockerPlate || !blockedPlate) {
@@ -411,21 +584,94 @@ async function renderApp(user) {
       el("blocksRes").innerHTML = `
         <div class="muted">Bloqueos hoy (${today}):</div>
         ${items.map(it => `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`).join("")}
-        <div class="muted" style="margin-top:10px;">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
       `;
     } catch (e) {
       console.error(e);
-      el("blocksRes").innerHTML = `<span class="warn">❌ Error listando bloqueos. Revisa Console.</span>`;
+      el("blocksRes").innerHTML = `<span class="warn">❌ Error listando bloqueos.</span>`;
     }
   };
+
+  // Admin: activar
+  if (el("btnFindPending")) {
+    let pendingUid = null;
+
+    el("btnFindPending").onclick = async () => {
+      const em = normEmail(el("pendingEmail").value);
+      el("adminRes").textContent = "Buscando...";
+      pendingUid = null;
+
+      if (!em) return el("adminRes").textContent = "⚠️ Escribe un email.";
+
+      try {
+        const qy = query(collection(db, "users"), where("email", "==", em));
+        const snap = await getDocs(qy);
+        if (snap.empty) return el("adminRes").textContent = "No encontré ese usuario.";
+
+        const d = snap.docs[0];
+        pendingUid = d.id;
+        const data = d.data();
+
+        el("adminRes").innerHTML = `
+          <div><b>${data.name || em}</b></div>
+          <div class="muted">UID: ${pendingUid}</div>
+          <div>Estado: <b>${data.estado}</b></div>
+          <div class="muted">Patentes: ${(data.plates || []).join(", ")}</div>
+          <div class="muted">Sector: ${data.sector || ""}</div>
+        `;
+      } catch (e) {
+        console.error(e);
+        el("adminRes").textContent = "❌ Error buscando (Rules?).";
+      }
+    };
+
+    el("btnActivate").onclick = async () => {
+      if (!pendingUid) return el("adminRes").textContent = "⚠️ Primero busca un usuario.";
+      el("adminRes").textContent = "Activando...";
+
+      try {
+        await updateDoc(doc(db, "users", pendingUid), {
+          estado: "activo",
+          approvedBy: uid,
+          approvedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        el("adminRes").innerHTML = `<span class="ok">✅ Usuario activado.</span>`;
+      } catch (e) {
+        console.error(e);
+        el("adminRes").textContent = "❌ No pude activar (Rules: OWNER_UIDS).";
+      }
+    };
+  }
 }
 
-/** =======================
- *  START
- *  ======================= */
-baseStyles();
+/** ========= START ========= **/
+renderAuthScreen();
 
-onAuthStateChanged(auth, (user) => {
-  if (user) renderApp(user);
-  else renderLogin();
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    renderAuthScreen();
+    return;
+  }
+
+  // Cargar perfil
+  let profile = null;
+  try {
+    profile = await getMyUserDoc(user.uid);
+  } catch (e) {
+    console.error("No pude leer perfil:", e);
+  }
+
+  // Si no existe perfil, lo forzamos a “pendiente” (o logout)
+  if (!profile) {
+    renderPending(user, { name: user.email, estado: "pendiente" });
+    return;
+  }
+
+  // Gate por estado
+  if (profile.estado !== "activo") {
+    renderPending(user, profile);
+    return;
+  }
+
+  renderApp(user, profile);
 });
