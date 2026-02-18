@@ -3,50 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
   <title>Estacionamiento KW</title>
 
   <!-- PWA -->
   <link rel="manifest" href="./manifest.json" />
   <meta name="theme-color" content="#0f172a" />
   <link rel="icon" href="./icons/icon-192x192.png" />
-
-  <!-- Estilos mínimos -->
-  <style>
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      margin: 0;
-      padding: 2rem;
-      background: #f8fafc;
-      color: #0f172a;
-    }
-    h1 {
-      margin-bottom: 0.5rem;
-    }
-    button {
-      padding: 0.6rem 1rem;
-      font-size: 1rem;
-      border: none;
-      border-radius: 6px;
-      background: #0f172a;
-      color: white;
-      cursor: pointer;
-    }
-    button:disabled {
-      opacity: 0.6;
-    }
-  </style>
 </head>
 
 <body>
-  <h1>Estacionamiento KW</h1>
-  <p>PWA conectada a Firebase</p>
-
-  <button id="loginBtn">Login anónimo (prueba)</button>
-
-  <pre id="log"></pre>
-
-  <!-- Firebase SDK -->
+  <!-- Todo se renderiza desde app.js -->
   <script type="module" src="./app.js"></script>
 
   <!-- Service Worker -->
