@@ -5,21 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Estacionamiento KW</title>
 
-  <!-- PWA -->
   <link rel="manifest" href="./manifest.json" />
   <meta name="theme-color" content="#0f172a" />
   <link rel="icon" href="./icons/icon-192x192.png" />
+
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px;background:#f8fafc;color:#0f172a}
+    h1{font-size:28px;margin:8px 0 4px}
+    .sub{opacity:.75;margin:0 0 16px}
+    .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px;margin:12px 0}
+    label{display:block;font-size:12px;opacity:.75;margin:10px 0 6px}
+    input,select{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
+    button{padding:12px 14px;border-radius:12px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:15px}
+    button.secondary{background:#fff;color:#0f172a}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .ok{color:#16a34a;font-weight:700}
+    .warn{color:#b45309;font-weight:700}
+    .muted{opacity:.75}
+    .pill{display:inline-block;padding:6px 10px;border:1px solid #cbd5e1;border-radius:999px;margin:6px 6px 0 0}
+    a.wa{display:inline-block;margin-top:10px;text-decoration:none}
+    .tabs{display:flex;gap:10px;margin-top:10px}
+    .tab{padding:10px 12px;border:1px solid #cbd5e1;border-radius:999px;background:#fff}
+    .tab.active{border-color:#0f172a}
+  </style>
 </head>
 
 <body>
-  <!-- Todo se renderiza desde app.js -->
   <script type="module" src="./app.js"></script>
-
-  <!-- Service Worker -->
   <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js");
-    }
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
   </script>
 </body>
 </html>
