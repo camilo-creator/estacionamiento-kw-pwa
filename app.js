@@ -4,7 +4,7 @@ import {
   getAuth,
   signInWithEmailAndPassword,
   onAuthStateChanged,
-  signOut
+  signOut,
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import {
   getFirestore,
@@ -16,10 +16,10 @@ import {
   query,
   where,
   getDocs,
-  serverTimestamp
+  serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-// 🔧 TU CONFIG (la que me diste)
+// 🔧 TU CONFIG
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -27,13 +27,14 @@ const firebaseConfig = {
   projectId: "estacionamiento-kw",
   storageBucket: "estacionamiento-kw.firebasestorage.app",
   messagingSenderId: "474380177810",
-  appId: "1:474380177810:web:9448efb41c8682e8a4714b"
+  appId: "1:474380177810:web:9448efb41c8682e8a4714b",
 };
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Helpers
 const todayStr = () => {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -95,17 +96,20 @@ function renderLogin() {
   el("btnLogin").onclick = async () => {
     el("loginMsg").textContent = "Entrando...";
     try {
-      await signInWithEmailAndPassword(auth, el("email").value.trim(), el("pass").value);
-      // onAuthStateChanged se encarga del resto
+      await signInWithEmailAndPassword(
+        auth,
+        el("email").value.trim(),
+        el("pass").value
+      );
     } catch (e) {
-      el("loginMsg").textContent = "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
+      el("loginMsg").textContent =
+        "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
       console.error(e);
     }
   };
 }
 
 function whatsappLink(phone, msg) {
-  // Chile: si viene con +56 o 56 ok. Si viene 9xxxxxxx lo convertimos a 569...
   let p = (phone || "").replace(/\D/g, "");
   if (p.startsWith("56")) {
     // ok
@@ -127,14 +131,14 @@ async function findUserByPlate(plate) {
 }
 
 async function renderApp(user) {
-  const email = user.email || "";
+  const email = (user.email || "").toLowerCase();
   const uid = user.uid;
   const today = todayStr();
 
-  // intentamos traer el perfil del propio usuario (doc id = email)
+  // Perfil del usuario actual (doc id = email)
   let myProfile = null;
   try {
-    const meRef = doc(db, "users", email.toLowerCase());
+    const meRef = doc(db, "users", email);
     const meSnap = await getDoc(meRef);
     if (meSnap.exists()) myProfile = meSnap.data();
   } catch (e) {
@@ -168,7 +172,7 @@ async function renderApp(user) {
           <input id="myPlate" placeholder="Ej: KHDC46" value="${(myProfile?.plates?.[0] || "")}" />
         </div>
         <div>
-          <label>Mi unidad/sector hoy</label>
+          <label>Mi sector hoy</label>
           <input id="mysectorToday" placeholder="Ej: Dental" value="${(myProfile?.sector || "")}" />
         </div>
       </div>
@@ -204,6 +208,7 @@ async function renderApp(user) {
   el("btnSearch").onclick = async () => {
     const plate = normPlate(el("searchPlate").value);
     el("searchRes").textContent = "Buscando...";
+
     if (!plate) {
       el("searchRes").innerHTML = `<span class="warn">⚠️ Escribe una patente.</span>`;
       return;
@@ -218,17 +223,22 @@ async function renderApp(user) {
 
       const name = found.name || "(sin nombre)";
       const phone = found.phone || "(sin teléfono)";
-      const unit = found.unit || "(sin unidad)";
+      // ✅ ahora mostramos SECTOR (y por si acaso, si alguien tiene "unit" antiguo, lo usa igual)
+      const sector = found.sector || found.unit || "(sin unidad)";
 
       const msg = `Hola ${name}. Te contacto por Estacionamiento KW: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
-      const wa = (String(phone).includes("sin") ? null : whatsappLink(phone, msg));
+      const wa = String(phone).includes("sin") ? null : whatsappLink(phone, msg);
 
       el("searchRes").innerHTML = `
         <div><b>${name}</b></div>
         <div>📞 ${phone}</div>
-        <div>🏥 ${unit}</div>
+        <div>🏥 ${sector}</div>
         <div class="muted" style="margin-top:6px;">Patentes registradas: ${(found.plates || []).map(p=>`<span class="pill">${p}</span>`).join("")}</div>
-        ${wa ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>` : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`}
+        ${
+          wa
+            ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>`
+            : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`
+        }
       `;
     } catch (e) {
       console.error(e);
@@ -236,30 +246,33 @@ async function renderApp(user) {
     }
   };
 
-  // Check-in
+  // ✅ Check-in (GUARDA sectorToday)
   el("btnCheckin").onclick = async () => {
     const plate = normPlate(el("myPlate").value);
-    const unitToday = (el("myUnitToday").value || "").trim();
+    const sectorToday = (el("mysectorToday").value || "").trim();
 
     el("checkinRes").textContent = "Guardando check-in...";
-    if (!plate || !unitToday) {
-      el("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o unidad.</span>`;
+    if (!plate || !sectorToday) {
+      el("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o sector.</span>`;
       return;
     }
 
     try {
-      // doc id estable por usuario+fecha (no “borra”, solo reemplaza el de hoy)
       const id = `${uid}_${today}`;
-      await setDoc(doc(db, "checkins", id), {
-        uid,
-        email,
-        plate,
-        unitToday,
-        date: today,
-        ts: serverTimestamp()
-      }, { merge: true });
+      await setDoc(
+        doc(db, "checkins", id),
+        {
+          uid,
+          email,
+          plate,
+          sectorToday, // ✅
+          date: today,
+          ts: serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-      el("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${plate} · ${unitToday}</span>`;
+      el("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${plate} · ${sectorToday}</span>`;
     } catch (e) {
       console.error(e);
       el("checkinRes").innerHTML = `<span class="warn">❌ No pude guardar check-in. Revisa Rules.</span>`;
@@ -284,7 +297,7 @@ async function renderApp(user) {
         blockerPlate,
         blockedPlate,
         date: today,
-        ts: serverTimestamp()
+        ts: serverTimestamp(),
       });
 
       el("blocksRes").innerHTML = `<span class="ok">✅ Bloqueo agregado: ${blockerPlate} → ${blockedPlate}</span>`;
@@ -311,10 +324,15 @@ async function renderApp(user) {
         return;
       }
 
-      const items = snap.docs.map(d => d.data());
+      const items = snap.docs.map((d) => d.data());
       el("blocksRes").innerHTML = `
         <div class="muted">Bloqueos hoy (${today}):</div>
-        ${items.map(it => `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`).join("")}
+        ${items
+          .map(
+            (it) =>
+              `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`
+          )
+          .join("")}
         <div class="muted" style="margin-top:10px;">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
       `;
     } catch (e) {
