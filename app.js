@@ -16,10 +16,13 @@ import {
   query,
   where,
   getDocs,
-  serverTimestamp
+  serverTimestamp,
+  deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-// 🔧 TU CONFIG (la que me diste)
+/** =======================
+ *  CONFIG FIREBASE
+ *  ======================= */
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -34,7 +37,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// ===== Helpers =====
+/** =======================
+ *  HELPERS
+ *  ======================= */
 const el = (id) => document.getElementById(id);
 
 const todayStr = () => {
@@ -51,17 +56,9 @@ const normPlate = (s) =>
     .replace(/\s+/g, "")
     .replace(/[^A-Z0-9]/g, "");
 
-// TTL: borra mañana a las 03:00 (más seguro que medianoche)
-function expiresTomorrowAt3AM() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(3, 0, 0, 0);
-  return d; // Firestore acepta Date como timestamp
-}
-
-// WhatsApp
+// WhatsApp link (Chile-friendly)
 function whatsappLink(phone, msg) {
-  let p = String(phone || "").replace(/\D/g, "");
+  let p = (phone || "").replace(/\D/g, "");
   if (p.startsWith("56")) {
     // ok
   } else if (p.length === 9 && p.startsWith("9")) {
@@ -71,31 +68,33 @@ function whatsappLink(phone, msg) {
   return `https://wa.me/${p}?text=${text}`;
 }
 
-// ===== UI base =====
 function baseStyles() {
   const style = document.createElement("style");
   style.textContent = `
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px;background:#f8fafc;color:#0f172a}
-    h1{font-size:30px;margin:8px 0 6px}
+    h1{font-size:28px;margin:8px 0 6px}
     .sub{opacity:.75;margin:0 0 16px}
     .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px;margin:12px 0}
     label{display:block;font-size:12px;opacity:.75;margin:10px 0 6px}
-    input{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
+    input,select{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:16px}
     button{padding:12px 14px;border-radius:12px;border:1px solid #0f172a;background:#0f172a;color:#fff;font-size:15px}
     button.secondary{background:#fff;color:#0f172a}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center}
     .ok{color:#16a34a;font-weight:700}
-    .warn{color:#b45309;font-weight:700}
+    .warn{color:#b45309;font-weight:800}
     .muted{opacity:.75}
     .pill{display:inline-block;padding:6px 10px;border:1px solid #cbd5e1;border-radius:999px;margin:6px 6px 0 0}
     a.wa{display:inline-block;margin-top:10px;text-decoration:none}
-    .tiny{font-size:12px;opacity:.7;margin-top:8px}
+    h3{margin:0 0 10px}
   `;
   document.head.appendChild(style);
 }
 
-// ===== Firestore queries =====
+/** =======================
+ *  FIRESTORE QUERIES
+ *  ======================= */
+
 // Busca perfil por patente dentro de users.plates (array-contains)
 async function findUserByPlate(plate) {
   const qy = query(collection(db, "users"), where("plates", "array-contains", plate));
@@ -105,16 +104,51 @@ async function findUserByPlate(plate) {
   return { id: docu.id, ...docu.data() };
 }
 
-// Trae check-in del usuario para HOY (si existe)
-async function getTodayCheckin(uid) {
-  const id = `${uid}_${todayStr()}`;
-  const ref = doc(db, "checkins", id);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  return snap.data();
+// Busca check-in de HOY por patente
+async function findTodayCheckinByPlate(plate) {
+  const t = todayStr();
+  const qy = query(
+    collection(db, "checkins"),
+    where("date", "==", t),
+    where("plate", "==", plate)
+  );
+  const snap = await getDocs(qy);
+  if (snap.empty) return null;
+
+  // Si hubiese más de 1, toma el más nuevo por ts si viene
+  let best = snap.docs[0].data();
+  for (const d of snap.docs) {
+    const data = d.data();
+    if (data?.ts && best?.ts && data.ts.seconds > best.ts.seconds) best = data;
+  }
+  return best;
 }
 
-// ===== Screens =====
+// “Borrado diario” (limpieza SIMPLE desde el cliente):
+// borra checkins anteriores a hoy que pertenezcan al usuario actual.
+// (Para borrado global de todos, se necesita TTL o Function programada.)
+async function cleanupMyOldCheckins(uid) {
+  try {
+    const t = todayStr();
+    const qy = query(collection(db, "checkins"), where("uid", "==", uid));
+    const snap = await getDocs(qy);
+    if (snap.empty) return;
+
+    for (const d of snap.docs) {
+      const data = d.data();
+      if (data?.date && data.date !== t) {
+        await deleteDoc(doc(db, "checkins", d.id));
+      }
+    }
+  } catch (e) {
+    // si Rules no permiten, no rompemos la app
+    console.warn("cleanupMyOldCheckins() no pudo borrar (rules?)", e);
+  }
+}
+
+/** =======================
+ *  UI: LOGIN
+ *  ======================= */
 function renderLogin() {
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
@@ -139,6 +173,7 @@ function renderLogin() {
     el("loginMsg").textContent = "Entrando...";
     try {
       await signInWithEmailAndPassword(auth, el("email").value.trim(), el("pass").value);
+      // onAuthStateChanged hace el resto
     } catch (e) {
       el("loginMsg").textContent = "❌ No pude iniciar sesión (email/clave o Auth no habilitado).";
       console.error(e);
@@ -146,10 +181,16 @@ function renderLogin() {
   };
 }
 
+/** =======================
+ *  UI: APP
+ *  ======================= */
 async function renderApp(user) {
   const email = (user.email || "").toLowerCase();
   const uid = user.uid;
   const today = todayStr();
+
+  // Limpieza “diaria” simple (del usuario)
+  cleanupMyOldCheckins(uid);
 
   // Perfil propio (doc id = email)
   let myProfile = null;
@@ -161,29 +202,17 @@ async function renderApp(user) {
     console.warn("No pude leer users/<email>", e);
   }
 
-  // Check-in de hoy (si existe)
-  let myTodayCheckin = null;
-  try {
-    myTodayCheckin = await getTodayCheckin(uid);
-  } catch (e) {
-    console.warn("No pude leer checkin de hoy", e);
-  }
-
-  const defaultPlate = (myProfile?.plates?.[0] || "");
-  const defaultSectorProfile = (myProfile?.sector || "");          // sector “base” (perfil)
-  const defaultSectorToday = (myTodayCheckin?.sectorToday || "");  // sector “hoy” (check-in)
-
   document.body.innerHTML = `
     <h1>Estacionamiento KW</h1>
     <div class="muted">👤 Sesión activa: <b>${email}</b></div>
 
     <div class="btns" style="margin:10px 0 2px;">
       <button class="secondary" id="btnLogout">Cerrar sesión</button>
-      <span class="ok">✅ Login correcto</span>
+      <span class="ok" id="statusOk">✅ Login correcto</span>
     </div>
 
     <div class="card">
-      <h3 style="margin:0 0 10px;">🔎 Buscar por patente</h3>
+      <h3>🔎 Buscar por patente</h3>
       <label>Patente</label>
       <input id="searchPlate" placeholder="Ej: KHDC46" />
       <div class="btns">
@@ -193,37 +222,29 @@ async function renderApp(user) {
     </div>
 
     <div class="card">
-      <h3 style="margin:0 0 10px;">📍 Check-in (hoy)</h3>
-
+      <h3>📍 Check-in (hoy)</h3>
       <div class="row">
         <div>
           <label>Mi patente</label>
-          <input id="myPlate" placeholder="Ej: KHDC46" value="${defaultPlate}" />
+          <input id="myPlate" placeholder="Ej: KHDC46" value="${(myProfile?.plates?.[0] || "")}" />
         </div>
         <div>
           <label>Mi sector hoy</label>
-          <input id="mySectorToday" placeholder="Ej: Dental / Farmacia" value="${defaultSectorToday || defaultSectorProfile}" />
+          <input id="mySectorToday" placeholder="Ej: Dental" value="${(myProfile?.sector || "")}" />
         </div>
       </div>
-
       <div class="btns">
         <button id="btnCheckin">Hacer check-in</button>
-        <button class="secondary" id="btnSeeToday">Ver mi check-in de hoy</button>
       </div>
-
       <div id="checkinRes" class="muted" style="margin-top:10px;"></div>
-
-      <div class="tiny">
-        📌 Nota: el <b>sector del perfil</b> (users.sector) puede ser distinto del <b>sector de hoy</b> (checkins.sectorToday).
-      </div>
     </div>
 
     <div class="card">
-      <h3 style="margin:0 0 10px;">🚗 Estoy bloqueando (hoy)</h3>
+      <h3>🚗 Estoy bloqueando (hoy)</h3>
       <div class="row">
         <div>
           <label>Mi patente (quien bloquea)</label>
-          <input id="blockerPlate" placeholder="Ej: KHDC46" value="${defaultPlate}" />
+          <input id="blockerPlate" placeholder="Ej: KHDC46" value="${(myProfile?.plates?.[0] || "")}" />
         </div>
         <div>
           <label>Patente bloqueada</label>
@@ -240,7 +261,9 @@ async function renderApp(user) {
 
   el("btnLogout").onclick = () => signOut(auth);
 
-  // ===== Buscar patente =====
+  /** =======================
+   *  BUSCAR POR PATENTE
+   *  ======================= */
   el("btnSearch").onclick = async () => {
     const plate = normPlate(el("searchPlate").value);
     el("searchRes").textContent = "Buscando...";
@@ -259,8 +282,28 @@ async function renderApp(user) {
 
       const name = found.name || "(sin nombre)";
       const phone = found.phone || "(sin teléfono)";
-      const sectorProfile = found.sector || "(sin sector en perfil)"; // OJO: viene de users.sector
-      const plates = Array.isArray(found.plates) ? found.plates : [];
+      const sectorHabitual = found.sector || "(sin sector habitual)";
+
+      // 🔥 check-in de HOY para esa patente
+      let checkinHoy = null;
+      try {
+        checkinHoy = await findTodayCheckinByPlate(plate);
+      } catch (e) {
+        console.warn("No pude leer checkin de hoy", e);
+      }
+      const sectorHoy = checkinHoy?.sectorToday || null;
+
+      let sectorHTML = "";
+      if (!sectorHoy) {
+        sectorHTML = `<div>🏥 Habitual: <b>${sectorHabitual}</b> <span class="muted">(sin check-in hoy)</span></div>`;
+      } else if ((sectorHoy || "").toLowerCase() !== (sectorHabitual || "").toLowerCase()) {
+        sectorHTML = `
+          <div class="warn">⚠️ Hoy está en: <b>${sectorHoy}</b></div>
+          <div class="muted">Habitual: ${sectorHabitual}</div>
+        `;
+      } else {
+        sectorHTML = `<div class="ok">✅ Hoy: <b>${sectorHoy}</b></div><div class="muted">Habitual: ${sectorHabitual}</div>`;
+      }
 
       const msg = `Hola ${name}. Te contacto por Estacionamiento KW: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
       const wa = (String(phone).includes("sin") ? null : whatsappLink(phone, msg));
@@ -268,9 +311,9 @@ async function renderApp(user) {
       el("searchRes").innerHTML = `
         <div><b>${name}</b></div>
         <div>📞 ${phone}</div>
-        <div>🏥 Perfil: ${sectorProfile}</div>
+        ${sectorHTML}
         <div class="muted" style="margin-top:6px;">
-          Patentes registradas: ${plates.map(p=>`<span class="pill">${p}</span>`).join("")}
+          Patentes registradas: ${(found.plates || []).map(p=>`<span class="pill">${p}</span>`).join("")}
         </div>
         ${wa ? `<a class="wa" href="${wa}" target="_blank"><button>📲 Enviar WhatsApp</button></a>` : `<div class="warn" style="margin-top:8px;">⚠️ No puedo armar WhatsApp si falta teléfono.</div>`}
       `;
@@ -280,7 +323,9 @@ async function renderApp(user) {
     }
   };
 
-  // ===== Check-in =====
+  /** =======================
+   *  CHECK-IN
+   *  ======================= */
   el("btnCheckin").onclick = async () => {
     const plate = normPlate(el("myPlate").value);
     const sectorToday = (el("mySectorToday").value || "").trim();
@@ -293,19 +338,20 @@ async function renderApp(user) {
     }
 
     try {
-      // 1 check-in por usuario por día (se reemplaza si lo haces de nuevo)
+      // doc id estable por usuario+fecha → “se borra solo” por lógica (se reemplaza cada día)
       const id = `${uid}_${today}`;
-
-      await setDoc(doc(db, "checkins", id), {
-        uid,
-        email,
-        plate,
-        sectorToday,
-        date: today,
-        ts: serverTimestamp(),
-        // ✅ TTL: Firestore lo borrará automáticamente mañana
-        expiresAt: expiresTomorrowAt3AM()
-      }, { merge: true });
+      await setDoc(
+        doc(db, "checkins", id),
+        {
+          uid,
+          email,
+          plate,
+          sectorToday,
+          date: today,
+          ts: serverTimestamp()
+        },
+        { merge: true }
+      );
 
       el("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${plate} · ${sectorToday}</span>`;
     } catch (e) {
@@ -314,28 +360,9 @@ async function renderApp(user) {
     }
   };
 
-  // Ver mi check-in de hoy
-  el("btnSeeToday").onclick = async () => {
-    el("checkinRes").textContent = "Leyendo check-in de hoy...";
-    try {
-      const data = await getTodayCheckin(uid);
-      if (!data) {
-        el("checkinRes").innerHTML = `<span class="muted">No hay check-in guardado hoy.</span>`;
-        return;
-      }
-      el("checkinRes").innerHTML = `
-        <div class="ok">✅ Check-in hoy:</div>
-        <div>🚗 ${data.plate}</div>
-        <div>🏥 ${data.sectorToday}</div>
-        <div class="tiny">Se auto-borra (TTL) aprox mañana 03:00</div>
-      `;
-    } catch (e) {
-      console.error(e);
-      el("checkinRes").innerHTML = `<span class="warn">❌ Error leyendo check-in. Revisa Rules.</span>`;
-    }
-  };
-
-  // ===== Bloqueos =====
+  /** =======================
+   *  BLOQUEOS
+   *  ======================= */
   el("btnAddBlock").onclick = async () => {
     const blockerPlate = normPlate(el("blockerPlate").value);
     const blockedPlate = normPlate(el("blockedPlate").value);
@@ -384,7 +411,7 @@ async function renderApp(user) {
       el("blocksRes").innerHTML = `
         <div class="muted">Bloqueos hoy (${today}):</div>
         ${items.map(it => `<div class="pill">${it.blockerPlate} → <b>${it.blockedPlate}</b></div>`).join("")}
-        <div class="tiny">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
+        <div class="muted" style="margin-top:10px;">Tip: para avisar, usa “Buscar por patente” y manda WhatsApp.</div>
       `;
     } catch (e) {
       console.error(e);
@@ -393,7 +420,9 @@ async function renderApp(user) {
   };
 }
 
-// ===== Start =====
+/** =======================
+ *  START
+ *  ======================= */
 baseStyles();
 
 onAuthStateChanged(auth, (user) => {
