@@ -944,7 +944,7 @@ async function renderApp(user) {
     }
   };
 
- // Agregar bloqueo + WhatsApp automático al bloqueado
+// Agregar bloqueo + WhatsApp automático al bloqueado
 el("btnAddBlock").onclick = async () => {
   const blockerPlate = normPlate(el("blockerPlate").value);
   const blockedPlate = normPlate(el("blockedPlate").value);
@@ -955,10 +955,10 @@ el("btnAddBlock").onclick = async () => {
     return;
   }
 
-  out.innerHTML = `<div class="muted">Guardando…</div>`;
+  out.innerHTML = `<div class="muted">Guardando bloqueo y buscando dueño...</div>`;
 
   try {
-    // 1) Guardar bloqueo
+    // 1) Guardar el registro del bloqueo en Firestore
     await addDoc(collection(db, COL_BLOCKS), {
       blockerUid: uid,
       blockerEmail: email,
@@ -968,73 +968,85 @@ el("btnAddBlock").onclick = async () => {
       ts: serverTimestamp()
     });
 
-    // 2) Buscar dueño del vehículo bloqueado en users (plates array-contains)
-    const qy = query(collection(db, "users"), where("plates", "array-contains", blockedPlate));
+    // 2) Buscar dueño del vehículo bloqueado
+    // Usamos COL_USERS para consistencia
+    const qy = query(collection(db, COL_USERS), where("plates", "array-contains", blockedPlate));
     const snap = await getDocs(qy);
 
+    // CASO A: No encontramos al dueño de la patente bloqueada
     if (snap.empty) {
       out.innerHTML = `
-        <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-        <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)} (no está en users.plates).</div>
-      `;
-      el("blockedPlate").value = "";
-      return;
-    }
-
-    const target = snap.docs[0].data();
-    const name = target.name || "hola";
-    const phone = target.phone || "";
-    const sector = target.sector || "";
-
-    // 3) Armar WhatsApp
-    const msg = `Hola ${name}. Soy ${user.name}. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contactame si necesitas salir.`;
-
-    // Normaliza teléfono Chile a 56XXXXXXXXX
-    let p = String(phone).replace(/\D/g, "");
-    if (p.startsWith("56")) {
-      // ok
-    } else if (p.length === 9 && p.startsWith("9")) {
-      p = "56" + p;
-    }
-
-    if (!p || p.length < 11) {
-      out.innerHTML = `
-        <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-        <div style="margin-top:10px;">
-          <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
-          <div>📞 ${escapeHtml(String(phone || "(sin teléfono)"))}</div>
-          <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
-          <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp porque el teléfono está vacío o inválido.</div>
+        <div class="badge ok">✅ Bloqueo registrado.</div>
+        <div class="muted" style="margin-top:8px">
+           🚗 Tú: <b>${escapeHtml(blockerPlate)}</b> <br/>
+           🚫 Bloqueas a: <b>${escapeHtml(blockedPlate)}</b>
+        </div>
+        <div class="badge warn" style="margin-top:8px;">
+          ⚠️ Esa patente no está registrada en la App, no puedo enviar WhatsApp.
         </div>
       `;
       el("blockedPlate").value = "";
       return;
     }
 
-    const wa = `https://wa.me/${p}?text=${encodeURIComponent(msg)}`;
+    // CASO B: Encontramos al dueño
+    const targetUser = snap.docs[0].data();
+    const targetName = targetUser.name || "Colega"; // Nombre del dueño del auto bloqueado
+    const targetPhone = targetUser.phone || "";
+    const targetSector = targetUser.sector || targetUser.unit || "(sin sector)";
+
+    // --- CORRECCIÓN AQUÍ ---
+    // Obtenemos TU nombre desde el perfil cargado (myProfile) o el Auth (user.displayName)
+    const myName = myProfile?.name || user.displayName || "Un colega del CESFAM";
+
+    // Mensaje para WhatsApp
+    const msg = `Hola ${targetName}. Soy ${myName}. Te contacto por la App de Estacionamiento: estoy bloqueando tu vehículo (${blockedPlate}). Avísame si necesitas salir.`;
+
+    // Formatear teléfono usando tu helper
+    const cleanPhone = formatPhoneChile(targetPhone);
+    
+    // Armar Link
+    let waLink = null;
+    if (cleanPhone && cleanPhone.length >= 8) {
+      waLink = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
+    }
+
+    // 3) Renderizar resultado en pantalla
+    let htmlBotones = "";
+    
+    if (waLink) {
+      htmlBotones = `
+        <a href="${waLink}" target="_blank" style="text-decoration:none;">
+          <button class="btn" style="width:100%; margin-top:10px; background:#25D366; color:#fff;">
+            📲 Abrir WhatsApp
+          </button>
+        </a>
+      `;
+      // Intentar abrir automáticamente (puede ser bloqueado por el navegador si tarda mucho)
+      window.open(waLink, "_blank");
+    } else {
+      htmlBotones = `<div class="badge warn" style="margin-top:10px">⚠️ El usuario no tiene teléfono válido registrado.</div>`;
+    }
 
     out.innerHTML = `
-      <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-      <div style="margin-top:10px;">
-        <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
-        <div>📞 ${escapeHtml(String(phone))}</div>
-        <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
-        <a class="wa" href="${wa}" target="_blank" rel="noopener">
-          <button>📲 Enviar WhatsApp ahora</button>
-        </a>
+      <div class="badge ok">✅ Bloqueo registrado y notificado.</div>
+      <div class="card" style="margin-top:10px; padding:10px; background:#f8fafc;">
+        <div style="font-weight:bold; color:#334155;">Datos del vehículo bloqueado:</div>
+        <div>👤 ${escapeHtml(targetName)}</div>
+        <div>🏥 ${escapeHtml(targetSector)}</div>
+        <div>📞 ${escapeHtml(targetPhone)}</div>
+        ${htmlBotones}
       </div>
     `;
 
-    // 4) Auto-abrir WhatsApp (en iPhone puede abrir en nueva pestaña; si lo bloquea igual queda el botón)
-    window.open(wa, "_blank");
-
+    // Limpiar input
     el("blockedPlate").value = "";
+
   } catch (e) {
     console.error(e);
-    out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
+    out.innerHTML = `<div class="badge warn">❌ Error al guardar (Revisa consola).</div>`;
   }
 };
-
 
   // Ver bloqueos de hoy
   el("btnListBlocks").onclick = async () => {
