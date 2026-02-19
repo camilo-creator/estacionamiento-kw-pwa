@@ -1,7 +1,9 @@
 // app.js — Estacionamiento CESFAM (GitHub Pages + Firebase CDN)
-// ✅ Login / Crear cuenta (wizard 3 pasos) + Aprobación por dueño (OWNER_UIDS)
-// ✅ Búsqueda por patente (muestra sector habitual + check-in de hoy si distinto)
+// ✅ Login / Registro (wizard 3 pasos) + Aprobación por dueño (OWNER_UIDS)
+// ✅ Perfil en Firestore: /users/{uid} (doc id = uid) create-only (usuario no edita)
+// ✅ Búsqueda por patente (sector habitual + check-in de hoy si distinto)
 // ✅ Check-in diario (guarda por uid_YYYY-MM-DD)
+// ✅ Bloqueo + WhatsApp al bloqueado
 
 // Firebase SDKs desde CDN (GitHub Pages compatible)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -508,7 +510,14 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     `
   ).join("");
 
-  const options = SECTORES.map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("");
+  const options = SECTORES
+    .map(
+      (s) =>
+        `<option value="${escapeHtml(s)}" ${
+          state.sector === s ? "selected" : ""
+        }>${escapeHtml(s)}</option>`
+    )
+    .join("");
 
   const step3 = `
     <div class="titleRow"><div style="font-size:20px">🛡️</div><h3>Registro Seguro</h3></div>
@@ -526,7 +535,9 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     </select>
 
     <label style="margin-top:14px;display:flex;gap:10px;align-items:flex-start">
-      <input id="rTerms" type="checkbox" style="width:auto;margin-top:3px" ${state.terms ? "checked" : ""}/>
+      <input id="rTerms" type="checkbox" style="width:auto;margin-top:3px" ${
+        state.terms ? "checked" : ""
+      }/>
       <span>
         Acepto los <a href="#" id="termsLink">Términos y Condiciones</a><br/>
         <span class="muted" style="font-size:12px">Conforme a la Ley 19.628 sobre protección de la vida privada</span>
@@ -602,7 +613,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
 
     el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 2 });
 
-    // ✅ FINISH: crea cuenta + crea doc /users/{uid} (sin merge)
+    // ✅ FINISH: crea cuenta + crea doc /users/{uid} (sin merge) + muestra error real
     el("btnFinish").onclick = async () => {
       const plates = readPlatesFromInputs().map(normPlate).filter(Boolean);
       const sector = String(el("rSector").value || "").trim();
@@ -618,13 +629,14 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
         const email = state.email;
         const pass = state.pass;
 
+        // 1) Crear usuario en Auth
         const cred = await createUserWithEmailAndPassword(auth, email, pass);
         const user = cred.user;
 
         // Nombre visible (opcional)
         try { await updateProfile(user, { displayName: state.name }); } catch {}
 
-        // Guardar perfil en Firestore (PENDIENTE aprobación)
+        // 2) Crear perfil en Firestore (docId = uid) — create-only
         const profile = {
           uid: user.uid,
           email: normEmail(email),
@@ -642,13 +654,24 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
           source: "self_register"
         };
 
-        // ✅ docId = uid, SIN merge (create-only)
-        await setDoc(doc(db, COL_USERS, user.uid), profile);
+        await setDoc(doc(db, COL_USERS, user.uid), profile); // ✅ sin merge
 
         el("rMsg").innerHTML = `<span class="ok">✅ Cuenta creada. Queda pendiente de autorización del dueño.</span>`;
       } catch (e) {
         console.error(e);
-        el("rMsg").innerHTML = `<span class="warn">❌ No pude crear la cuenta. (¿Email ya existe? ¿Auth habilitado?)</span>`;
+        const code = e?.code || "";
+        const msg = e?.message || "";
+
+        let nice = "❌ No pude crear la cuenta.";
+        if (code === "auth/email-already-in-use") nice = "❌ Ese correo ya existe. Usa 'Iniciar sesión' o 'Olvidé mi contraseña'.";
+        else if (code === "auth/weak-password") nice = "❌ Contraseña muy débil. Usa mínimo 8 caracteres (ideal: letras + números).";
+        else if (code === "auth/invalid-email") nice = "❌ Correo inválido. Revisa el formato.";
+        else if (code === "auth/operation-not-allowed") nice = "❌ Email/Password no está habilitado en Firebase Auth.";
+        else if (code === "auth/unauthorized-domain") nice = "❌ Dominio no autorizado. Agrega camilo-creator.github.io en Authorized domains.";
+
+        el("rMsg").innerHTML =
+          `<span class="warn">${nice}</span>` +
+          `<div class="muted" style="margin-top:6px;font-size:12px">${escapeHtml(code)}<br>${escapeHtml(msg)}</div>`;
       }
     };
 
@@ -788,7 +811,7 @@ async function renderApp(user) {
           ${list.map(u => `
             <div class="card" style="box-shadow:none;margin:10px 0">
               <div style="font-weight:900">${escapeHtml(u.name || "(sin nombre)")}</div>
-              <div class="muted">${escapeHtml(u.email || u.id)}</div>
+              <div class="muted">${escapeHtml(u.email || "(sin email)")}</div>
               <div class="muted">🏥 ${escapeHtml(u.sector || u.unit || "(sin sector)")}</div>
               <div class="muted">🚗 ${(u.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
               <button class="btn" data-approve="${escapeHtml(u.id)}" style="width:100%;margin-top:10px">
