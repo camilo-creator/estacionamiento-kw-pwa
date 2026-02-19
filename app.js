@@ -47,6 +47,7 @@ const firebaseConfig = {
 const OWNER_UIDS = ["hnRLNmTe5uguxYWFNufET3YnGQL2"];
 
 const COL_USERS = "users";
+const COL_USERS_GUEST = "users_guest"
 const COL_CHECKINS = "checkins";
 const COL_BLOCKS = "blocks";
 
@@ -107,6 +108,23 @@ function formatPhoneChile(phone) {
   if (p.length === 9 && p.startsWith("9")) return "56" + p;
   return p;
 }
+function formatGuestPhoneToE164CL(raw) {
+  // El usuario escribe SOLO 9 dígitos (ej: 912345678)
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length !== 9) return null;
+  // Chile móvil usual parte con 9
+  if (!d.startsWith("9")) return null;
+  return "+56" + d;
+}
+
+// ✅ Perfil invitado por UID (users_guest/{uid})
+async function getGuestProfileByUid(uid) {
+  if (!uid) return null;
+  const ref = doc(db, COL_USERS_GUEST, uid);
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
+}
+
 function whatsappLink(phone, msg) {
   const p = formatPhoneChile(phone);
   if (!p) return null;
@@ -396,16 +414,10 @@ function renderLanding({ defaultTab = "login" } = {}) {
 
   el("btnForgot").onclick = () => renderForgotPassword();
 
-  el("btnVisitor").onclick = async () => {
-    el("msg").textContent = "Entrando como visita…";
-    try {
-      await signInAnonymously(auth);
-    } catch (e) {
-      console.error(e);
-      el("msg").innerHTML =
-        `<span class="warn">❌ No pude entrar como visita. Revisa configuración de Firebase.</span>`;
-    }
+  el("btnVisitor").onclick = () => {
+    renderGuestRegisterWizard(); // ✅ ahora abre formulario de visita
   };
+  
 }
 
 
@@ -725,6 +737,102 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     }
   }
 }
+function renderGuestRegisterWizard(state = {}) {
+  document.body.innerHTML = `
+    <div class="wrap">
+      <div class="hero">
+        <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
+        <h1 style="font-size:28px">Ingreso como Visita</h1>
+        <div class="subtitle" style="font-size:16px">Registro rápido (válido por 1 día)</div>
+      </div>
+
+      <div class="card">
+        <div class="titleRow"><div style="font-size:20px">👥</div><h3>Registro de Visita</h3></div>
+        <div class="muted">Completa estos datos para continuar.</div>
+
+        <label>Nombre</label>
+        <input id="gName" placeholder="Ej: Juan Pérez" value="${escapeHtml(state.name || "")}" />
+
+        <label>Teléfono (9 dígitos, sin +56)</label>
+        <input id="gPhone" inputmode="numeric" placeholder="Ej: 912345678" value="${escapeHtml(state.phone || "")}" />
+        <div class="muted" style="font-size:12px;margin-top:6px">Guardaremos como <b>+56XXXXXXXXX</b>.</div>
+
+        <label>Patente</label>
+        <input id="gPlate" placeholder="Ej: ABCD12" value="${escapeHtml(state.plate || "")}" />
+
+        <label>Sector / Unidad</label>
+        <select id="gSector">
+          <option value="">Selecciona tu unidad</option>
+          ${SECTORES.map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}
+        </select>
+
+        <div class="row" style="margin-top:14px">
+          <button id="gBack" class="btn secondary">Volver</button>
+          <button id="gGo" class="btn">Continuar</button>
+        </div>
+
+        <div id="gMsg" class="muted" style="margin-top:10px"></div>
+      </div>
+
+      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
+    </div>
+  `;
+
+  el("gBack").onclick = () => renderLanding({ defaultTab: "login" });
+
+  el("gGo").onclick = async () => {
+    const name = String(el("gName").value || "").trim();
+    const phoneRaw = String(el("gPhone").value || "").trim();
+    const plate = normPlate(el("gPlate").value);
+    const sector = String(el("gSector").value || "").trim();
+    const out = el("gMsg");
+
+    if (!name) return (out.innerHTML = `<span class="warn">⚠️ Falta nombre.</span>`);
+    const numero = formatGuestPhoneToE164CL(phoneRaw);
+    if (!numero) return (out.innerHTML = `<span class="warn">⚠️ Teléfono inválido. Debe ser 9 dígitos y comenzar con 9.</span>`);
+    if (!plate) return (out.innerHTML = `<span class="warn">⚠️ Falta patente.</span>`);
+    if (!sector) return (out.innerHTML = `<span class="warn">⚠️ Selecciona un sector.</span>`);
+
+    out.textContent = "Ingresando como visita…";
+
+    try {
+      // 1) Login anónimo
+      const cred = await signInAnonymously(auth);
+      const user = cred.user;
+
+      // 2) Crear doc en users_guest/{uid}
+      const profile = {
+        uid: user.uid,
+        name,
+        numero,            // ✅ +56XXXXXXXXX
+        plates: [plate],   // ✅ array
+        sector,
+        createdAt: serverTimestamp(),
+        source: "guest_register"
+      };
+
+      await setDoc(doc(db, COL_USERS_GUEST, user.uid), profile);
+
+      out.innerHTML = `<span class="ok">✅ Listo. Entrando…</span>`;
+      await renderApp(user); // entra a la app
+    } catch (e) {
+      console.error(e);
+      const code = e?.code || "";
+      const msg = e?.message || "";
+
+      let nice = "❌ No pude entrar como visita.";
+      if (code === "auth/admin-restricted-operation") {
+        nice = "❌ Anonymous está restringido por el proyecto (admin-restricted-operation). Debes habilitar/permitir Anonymous en Auth/Identity Platform.";
+      } else if (code === "auth/operation-not-allowed") {
+        nice = "❌ Anonymous no está habilitado. Actívalo en Firebase Auth → Sign-in method → Anonymous.";
+      }
+
+      out.innerHTML =
+        `<span class="warn">${escapeHtml(nice)}</span>` +
+        `<div class="muted" style="margin-top:6px;font-size:12px">${escapeHtml(code)}<br>${escapeHtml(msg)}</div>`;
+    }
+  };
+}
 
 /** =========================
  *  APP (logged-in)
@@ -733,7 +841,11 @@ async function renderApp(user) {
   const email = normEmail(user.email || "");
   const uid = user.uid;
 
-  const myProfile = user.isAnonymous ? null : await getMyProfileByUid(uid);
+  // Perfil
+  const myProfile = user.isAnonymous
+  ? await getGuestProfileByUid(uid) // ✅ visita desde users_guest
+  : await getMyProfileByUid(uid);   // ✅ funcionario desde users
+
   const mySector = myProfile?.sector || myProfile?.unit || "";
   const myPlates = Array.isArray(myProfile?.plates) ? myProfile.plates : [];
 
