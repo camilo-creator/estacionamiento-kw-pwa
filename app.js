@@ -1221,6 +1221,31 @@ onAuthStateChanged(auth, async (user) => {
   if (!user.isAnonymous) {
     const profile = await getMyProfileByUid(user.uid);
 
+  if (!profile) {
+    // ✅ Caso típico: Auth creado pero falló el setDoc en /users/{uid}
+    // Creamos un perfil mínimo "pending" para que el owner lo pueda aprobar
+    try {
+      await setDoc(doc(db, COL_USERS, user.uid), {
+        uid: user.uid,
+        email: normEmail(user.email || ""),
+        name: user.displayName || "",
+        username: (user.displayName || "").split(" ")[0] || "",
+        rut: "",
+        phone: "",
+        plates: [],
+        sector: "",
+        unit: "",
+        status: "pending",
+        estado: "pendiente",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        source: "auto_fix_missing_profile"
+      });
+    } catch (e) {
+      console.error("No pude auto-crear perfil faltante:", e);
+    }
+  }
+
     // Si Auth existe pero no hay doc => obliga completar registro
     if (!profile) {
       renderRegisterWizard({
