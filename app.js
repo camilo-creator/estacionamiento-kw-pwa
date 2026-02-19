@@ -1,7 +1,7 @@
 // app.js — Estacionamiento CESFAM (GitHub Pages + Firebase CDN)
 // ✅ Login / Crear cuenta (wizard 3 pasos) + Aprobación por dueño (OWNER_UIDS)
 // ✅ Búsqueda por patente (muestra sector habitual + check-in de hoy si distinto)
-// ✅ Check-in diario (guarda por uid_YYYY-MM-DD) + “limpieza” de checkins antiguos del propio usuario
+// ✅ Check-in diario (guarda por uid_YYYY-MM-DD)
 
 // Firebase SDKs desde CDN (GitHub Pages compatible)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -26,8 +26,7 @@ import {
   query,
   where,
   getDocs,
-  serverTimestamp,
-  deleteDoc
+  serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 /** =========================
@@ -115,7 +114,7 @@ function whatsappLink(phone, msg) {
   return `https://wa.me/${p}?text=${encodeURIComponent(msg || "")}`;
 }
 
-// Dropdown sectores (lo que mostraste)
+// Dropdown sectores
 const SECTORES = [
   "Dirección",
   "Dental",
@@ -258,6 +257,19 @@ function injectStyles() {
     }
     .badge.ok{border-color:#bbf7d0;background:#f0fdf4;color:#166534}
     .badge.warn{border-color:#fed7aa;background:#fff7ed;color:#9a3412}
+    .wa button{
+      width:100%;
+      margin-top:12px;
+      border:0;
+      border-radius:14px;
+      padding:13px 14px;
+      background:linear-gradient(180deg,#16a34a,#15803d);
+      color:#fff;
+      font-weight:800;
+      font-size:15px;
+      cursor:pointer;
+      box-shadow: var(--shadow);
+    }
   `;
   document.head.appendChild(style);
 }
@@ -266,10 +278,10 @@ function injectStyles() {
  *  DATA ACCESS
  *  ========================= */
 
-// Perfil del usuario actual (doc id = email)
-async function getMyProfile(email) {
-  if (!email) return null;
-  const ref = doc(db, COL_USERS, normEmail(email));
+// ✅ Perfil del usuario actual (doc id = UID)
+async function getMyProfileByUid(uid) {
+  if (!uid) return null;
+  const ref = doc(db, COL_USERS, uid);
   const snap = await getDoc(ref);
   return snap.exists() ? snap.data() : null;
 }
@@ -290,22 +302,6 @@ async function getTodayCheckinByUid(uid) {
   const ref = doc(db, COL_CHECKINS, id);
   const snap = await getDoc(ref);
   return snap.exists() ? snap.data() : null;
-}
-
-// Limpieza: borrar checkins antiguos del usuario (si tus Rules permiten delete al propio uid)
-async function cleanupOldCheckinsForMe(uid) {
-  if (!uid) return;
-  const t = todayStr();
-  const qy = query(collection(db, COL_CHECKINS), where("uid", "==", uid));
-  const snap = await getDocs(qy);
-  const deletions = [];
-  snap.forEach((d) => {
-    const data = d.data();
-    if (data?.date && data.date !== t) deletions.push(deleteDoc(doc(db, COL_CHECKINS, d.id)));
-  });
-  if (deletions.length) {
-    try { await Promise.allSettled(deletions); } catch {}
-  }
 }
 
 /** =========================
@@ -376,7 +372,6 @@ function renderLanding({ defaultTab = "login" } = {}) {
     el("msg").textContent = "Entrando como visita…";
     try {
       await signInAnonymously(auth);
-      // si tus Rules no permiten, lo verás al buscar
     } catch (e) {
       console.error(e);
       el("msg").innerHTML = `<span class="warn">❌ No pude entrar como visita. (Activa “Anonymous” en Firebase Auth o usa login)</span>`;
@@ -607,6 +602,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
 
     el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 2 });
 
+    // ✅ FINISH: crea cuenta + crea doc /users/{uid} (sin merge)
     el("btnFinish").onclick = async () => {
       const plates = readPlatesFromInputs().map(normPlate).filter(Boolean);
       const sector = String(el("rSector").value || "").trim();
@@ -637,8 +633,8 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
           rut: state.rut || "",
           phone: state.phone || "",
           plates,
-          sector,                  // ✅ campo habitual
-          unit: sector,            // compat (por si algo viejo pide unit)
+          sector,
+          unit: sector, // compat
           status: "pending",
           estado: "pendiente",
           createdAt: serverTimestamp(),
@@ -646,7 +642,8 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
           source: "self_register"
         };
 
-        await setDoc(doc(db, COL_USERS, normEmail(email)), profile, { merge: true });
+        // ✅ docId = uid, SIN merge (create-only)
+        await setDoc(doc(db, COL_USERS, user.uid), profile);
 
         el("rMsg").innerHTML = `<span class="ok">✅ Cuenta creada. Queda pendiente de autorización del dueño.</span>`;
       } catch (e) {
@@ -671,16 +668,11 @@ async function renderApp(user) {
   const email = normEmail(user.email || "");
   const uid = user.uid;
 
-  // Perfil
-  const myProfile = user.isAnonymous ? null : await getMyProfile(email);
+  // Perfil (por UID)
+  const myProfile = user.isAnonymous ? null : await getMyProfileByUid(uid);
 
-  // Si no hay perfil y no es anon: igual mostramos (pero avisamos)
   const mySector = myProfile?.sector || myProfile?.unit || "";
   const myPlates = Array.isArray(myProfile?.plates) ? myProfile.plates : [];
-
-  // Limpieza checkins antiguos (solo del usuario)
-  // (si tus Rules no permiten delete, no rompe: solo fallará silencioso)
-  await cleanupOldCheckinsForMe(uid);
 
   document.body.innerHTML = `
     <div class="wrap">
@@ -699,7 +691,6 @@ async function renderApp(user) {
       <div class="card">
         <div class="titleRow"><div style="font-size:20px">🛠️</div><h3>Admin (Dueño)</h3></div>
         <div class="muted">UID: <b>${escapeHtml(uid)}</b></div>
-        <div class="muted">Limpieza diaria: OK.</div>
         <div style="margin-top:12px">
           <button id="btnPending" class="btn" style="width:100%">Ver pendientes de autorización</button>
         </div>
@@ -775,11 +766,9 @@ async function renderApp(user) {
       const out = el("pendingRes");
       out.innerHTML = `<div class="muted">Cargando…</div>`;
       try {
-        // Pending por status
         const qy1 = query(collection(db, COL_USERS), where("status", "==", "pending"));
         const s1 = await getDocs(qy1);
 
-        // Pending por estado (compat)
         const qy2 = query(collection(db, COL_USERS), where("estado", "==", "pendiente"));
         const s2 = await getDocs(qy2);
 
@@ -850,7 +839,6 @@ async function renderApp(user) {
     try {
       const found = await findUserByPlate(plate);
 
-      // Si no existe o no está activo => “no autorizado”
       if (!found || !isUserActive(found)) {
         out.innerHTML = `<div class="badge warn">⚠️ No encontré esa patente (o el usuario no está autorizado).</div>`;
         return;
@@ -862,7 +850,6 @@ async function renderApp(user) {
       const plates = Array.isArray(found.plates) ? found.plates : [];
       const foundUid = found.uid || null;
 
-      // Check-in de hoy del dueño de esa patente
       let todayCI = null;
       if (foundUid) todayCI = await getTodayCheckinByUid(foundUid);
 
@@ -929,14 +916,13 @@ async function renderApp(user) {
           email,
           plate,
           date: todayStr(),
-          sectorToday,          // ✅ nuevo campo real
-          unitToday: sectorToday, // compat
+          sectorToday,
+          unitToday: sectorToday,
           ts: serverTimestamp()
         },
         { merge: true }
       );
 
-      // Mostrar siempre el checkin guardado (no el “habitual”)
       out.innerHTML = `<div class="badge ok">✅ Check-in OK: <b>${escapeHtml(plate)}</b> · <b>${escapeHtml(sectorToday)}</b></div>`;
     } catch (e) {
       console.error(e);
@@ -944,97 +930,87 @@ async function renderApp(user) {
     }
   };
 
- // Agregar bloqueo + WhatsApp automático al bloqueado
-el("btnAddBlock").onclick = async () => {
-  const blockerPlate = normPlate(el("blockerPlate").value);
-  const blockedPlate = normPlate(el("blockedPlate").value);
-  const out = el("blocksRes");
+  // Agregar bloqueo + WhatsApp automático al bloqueado
+  el("btnAddBlock").onclick = async () => {
+    const blockerPlate = normPlate(el("blockerPlate").value);
+    const blockedPlate = normPlate(el("blockedPlate").value);
+    const out = el("blocksRes");
 
-  if (!blockerPlate || !blockedPlate) {
-    out.innerHTML = `<div class="badge warn">⚠️ Falta mi patente o la bloqueada.</div>`;
-    return;
-  }
-
-  out.innerHTML = `<div class="muted">Guardando…</div>`;
-
-  try {
-    // 1) Guardar bloqueo
-    await addDoc(collection(db, COL_BLOCKS), {
-      blockerUid: uid,
-      blockerEmail: email,
-      blockerPlate,
-      blockedPlate,
-      date: todayStr(),
-      ts: serverTimestamp()
-    });
-
-    // 2) Buscar dueño del vehículo bloqueado en users (plates array-contains)
-    const qy = query(collection(db, "users"), where("plates", "array-contains", blockedPlate));
-    const snap = await getDocs(qy);
-
-    if (snap.empty) {
-      out.innerHTML = `
-        <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-        <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)} (no está en users.plates).</div>
-      `;
-      el("blockedPlate").value = "";
+    if (!blockerPlate || !blockedPlate) {
+      out.innerHTML = `<div class="badge warn">⚠️ Falta mi patente o la bloqueada.</div>`;
       return;
     }
 
-    const target = snap.docs[0].data();
-    const name = target.name || "hola";
-    const phone = target.phone || "";
-    const sector = target.sector || "";
+    out.innerHTML = `<div class="muted">Guardando…</div>`;
 
-    // 3) Armar WhatsApp
-    const msg = `Hola ${name}. Soy Camilin. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contactame si necesitas salir.`;
+    try {
+      // 1) Guardar bloqueo
+      await addDoc(collection(db, COL_BLOCKS), {
+        blockerUid: uid,
+        blockerEmail: email,
+        blockerPlate,
+        blockedPlate,
+        date: todayStr(),
+        ts: serverTimestamp()
+      });
 
-    // Normaliza teléfono Chile a 56XXXXXXXXX
-    let p = String(phone).replace(/\D/g, "");
-    if (p.startsWith("56")) {
-      // ok
-    } else if (p.length === 9 && p.startsWith("9")) {
-      p = "56" + p;
-    }
+      // 2) Buscar dueño del vehículo bloqueado en users (plates array-contains)
+      const qy = query(collection(db, COL_USERS), where("plates", "array-contains", blockedPlate));
+      const snap = await getDocs(qy);
 
-    if (!p || p.length < 11) {
+      if (snap.empty) {
+        out.innerHTML = `
+          <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
+          <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)} (no está en users.plates).</div>
+        `;
+        el("blockedPlate").value = "";
+        return;
+      }
+
+      const target = snap.docs[0].data();
+      const name = target.name || "hola";
+      const phone = target.phone || "";
+      const sector = target.sector || "";
+
+      // 3) Armar WhatsApp
+      const msg = `Hola ${name}. Soy Camilin. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contáctame si necesitas salir.`;
+      const wa = whatsappLink(phone, msg);
+
+      if (!wa) {
+        out.innerHTML = `
+          <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
+          <div style="margin-top:10px;">
+            <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
+            <div>📞 ${escapeHtml(String(phone || "(sin teléfono)"))}</div>
+            <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
+            <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp porque el teléfono está vacío o inválido.</div>
+          </div>
+        `;
+        el("blockedPlate").value = "";
+        return;
+      }
+
       out.innerHTML = `
         <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
         <div style="margin-top:10px;">
           <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
-          <div>📞 ${escapeHtml(String(phone || "(sin teléfono)"))}</div>
+          <div>📞 ${escapeHtml(String(phone))}</div>
           <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
-          <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp porque el teléfono está vacío o inválido.</div>
+          <a class="wa" href="${wa}" target="_blank" rel="noopener">
+            <button>📲 Enviar WhatsApp ahora</button>
+          </a>
         </div>
       `;
+
+      // Auto-abrir WhatsApp (si el navegador lo permite)
+      window.open(wa, "_blank");
+
       el("blockedPlate").value = "";
-      return;
+    } catch (e) {
+      console.error(e);
+      out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
     }
-
-    const wa = `https://wa.me/${p}?text=${encodeURIComponent(msg)}`;
-
-    out.innerHTML = `
-      <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-      <div style="margin-top:10px;">
-        <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
-        <div>📞 ${escapeHtml(String(phone))}</div>
-        <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
-        <a class="wa" href="${wa}" target="_blank" rel="noopener">
-          <button>📲 Enviar WhatsApp ahora</button>
-        </a>
-      </div>
-    `;
-
-    // 4) Auto-abrir WhatsApp (en iPhone puede abrir en nueva pestaña; si lo bloquea igual queda el botón)
-    window.open(wa, "_blank");
-
-    el("blockedPlate").value = "";
-  } catch (e) {
-    console.error(e);
-    out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
-  }
-};
-
+  };
 
   // Ver bloqueos de hoy
   el("btnListBlocks").onclick = async () => {
@@ -1078,15 +1054,15 @@ onAuthStateChanged(auth, async (user) => {
 
   // Si no es visita, revisa autorización antes de “dejar usar”
   if (!user.isAnonymous) {
-    const profile = await getMyProfile(user.email);
+    const profile = await getMyProfileByUid(user.uid);
+
     if (!profile) {
-      // No hay doc: lo dejamos igual entrar, pero avisará en búsqueda/otros.
+      // No hay doc: igual entra, pero probablemente es un usuario viejo o registro incompleto
       await renderApp(user);
       return;
     }
 
     if (!isUserActive(profile)) {
-      // Pendiente de aprobación => pantalla bloqueada (pero con botón cerrar sesión)
       document.body.innerHTML = `
         <div class="wrap">
           <div class="topbar">
