@@ -303,11 +303,7 @@ async function getTodayCheckinByUid(uid) {
   return snap.exists() ? snap.data() : null;
 }
 
-/** =========================
- *  RENDER: LANDING
- *  ========================= */
 function renderLanding({ defaultTab = "login" } = {}) {
-  const tabLogin = defaultTab === "login";
   document.body.innerHTML = `
     <div class="wrap">
       <div class="hero">
@@ -328,13 +324,14 @@ function renderLanding({ defaultTab = "login" } = {}) {
           <div style="font-size:20px">👤</div>
           <h3>Acceso Personal CESFAM</h3>
         </div>
-        <div class="muted" style="margin-top:6px">
-          Inicia sesión con tu correo (Gmail, Hotmail, Yahoo, etc.)
-        </div>
 
         <div class="tabs">
-          <button id="tabLogin" class="tab ${tabLogin ? "active" : ""}">Iniciar Sesión</button>
-          <button id="tabCreate" class="tab ${!tabLogin ? "active" : ""}">Crear Cuenta</button>
+          <button id="tabLogin" class="tab ${defaultTab === "login" ? "active" : ""}">
+            Iniciar Sesión
+          </button>
+          <button id="tabCreate" class="tab ${defaultTab === "create" ? "active" : ""}">
+            Crear Cuenta
+          </button>
         </div>
 
         <div id="panel"></div>
@@ -344,12 +341,6 @@ function renderLanding({ defaultTab = "login" } = {}) {
           <button id="btnVisitor" class="btn link">👥 Entrar como visita</button>
         </div>
 
-        <div class="divider"></div>
-
-        <button id="btnRegFuncionario" class="btn secondary" style="width:100%">
-          ➕ Inscripción de Funcionario
-        </button>
-
         <div id="msg" class="muted" style="margin-top:10px"></div>
       </div>
 
@@ -357,15 +348,52 @@ function renderLanding({ defaultTab = "login" } = {}) {
     </div>
   `;
 
-  el("tabLogin").onclick = () => renderLanding({ defaultTab: "login" });
-  el("tabCreate").onclick = () => renderLanding({ defaultTab: "create" });
+  /* ====== TABS ====== */
 
+  // LOGIN → muestra login normal
+  el("tabLogin").onclick = () => {
+    el("tabLogin").classList.add("active");
+    el("tabCreate").classList.remove("active");
+    renderLanding({ defaultTab: "login" });
+  };
+
+  // CREAR CUENTA → VA DIRECTO AL FORMULARIO
+  el("tabCreate").onclick = () => {
+    renderRegisterWizard(); // 👈 directo al wizard
+  };
+
+  /* ====== PANEL ====== */
   const panel = el("panel");
-  panel.innerHTML = tabLogin ? renderLoginPanelHtml() : renderCreatePanelHtml();
 
-  wireLoginCreate(tabLogin);
+  if (defaultTab === "login") {
+    panel.innerHTML = `
+      <label>Correo electrónico</label>
+      <input id="email" type="email" placeholder="tu@email.cl" autocomplete="username" />
 
-  el("btnRegFuncionario").onclick = () => renderRegisterWizard();
+      <label>Contraseña</label>
+      <input id="pass" type="password" placeholder="********" autocomplete="current-password" />
+
+      <div style="margin-top:14px">
+        <button id="btnLogin" class="btn" style="width:100%">Iniciar Sesión</button>
+      </div>
+    `;
+
+    el("btnLogin").onclick = async () => {
+      const email = normEmail(el("email").value);
+      const pass = el("pass").value;
+      el("msg").textContent = "Iniciando sesión…";
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch (e) {
+        console.error(e);
+        el("msg").innerHTML =
+          `<span class="warn">❌ Email o contraseña incorrectos.</span>`;
+      }
+    };
+  }
+
+  /* ====== OTROS BOTONES ====== */
+
   el("btnForgot").onclick = () => renderForgotPassword();
 
   el("btnVisitor").onclick = async () => {
@@ -374,10 +402,12 @@ function renderLanding({ defaultTab = "login" } = {}) {
       await signInAnonymously(auth);
     } catch (e) {
       console.error(e);
-      el("msg").innerHTML = `<span class="warn">❌ No pude entrar como visita. (Activa “Anonymous” en Firebase Auth o usa login)</span>`;
+      el("msg").innerHTML =
+        `<span class="warn">❌ No pude entrar como visita. Revisa configuración de Firebase.</span>`;
     }
   };
 }
+
 
 function renderLoginPanelHtml() {
   return `
