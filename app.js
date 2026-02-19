@@ -987,7 +987,7 @@ el("btnAddBlock").onclick = async () => {
     const sector = target.sector || "";
 
     // 3) Armar WhatsApp
-    const msg = `Hola ${name}. Te contacto por la app Estacionamiento KW: tu vehículo (${blockedPlate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
+    const msg = `Hola ${name}. Soy ${user.name}. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contactame si necesitas salir.`;
 
     // Normaliza teléfono Chile a 56XXXXXXXXX
     let p = String(phone).replace(/\D/g, "");
