@@ -1,16 +1,19 @@
-// ==============================
-// Estacionamiento CESFAM KW - app.js (GitHub Pages + Firebase CDN)
-// ==============================
+// app.js — Estacionamiento CESFAM (GitHub Pages + Firebase CDN)
+// ✅ Login / Crear cuenta (wizard 3 pasos) + Aprobación por dueño (OWNER_UIDS)
+// ✅ Búsqueda por patente (muestra sector habitual + check-in de hoy si distinto)
+// ✅ Check-in diario (guarda por uid_YYYY-MM-DD) + “limpieza” de checkins antiguos del propio usuario
 
-// Firebase SDKs desde CDN
+// Firebase SDKs desde CDN (GitHub Pages compatible)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import {
   getAuth,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  signOut,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  signOut
+  signInAnonymously,
+  updateProfile
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import {
   getFirestore,
@@ -18,16 +21,18 @@ import {
   getDoc,
   setDoc,
   updateDoc,
-  deleteDoc,
   addDoc,
   collection,
   query,
   where,
   getDocs,
-  serverTimestamp
+  serverTimestamp,
+  deleteDoc
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-// 🔧 TU CONFIG (la que me diste)
+/** =========================
+ *  CONFIG
+ *  ========================= */
 const firebaseConfig = {
   apiKey: "AIzaSyDXxvBG0HuFIH5b8vpQkggtqJVJAQZca88",
   authDomain: "estacionamiento-kw.firebaseapp.com",
@@ -38,23 +43,25 @@ const firebaseConfig = {
   appId: "1:474380177810:web:9448efb41c8682e8a4714b"
 };
 
-// ✅ OWNER UID(s) - tu UID real
-const OWNER_UIDS = new Set([
-  "hnRLNmTe5uguxYWFNufET3YnGQL2"
-]);
+// 🔐 Pon aquí tu UID (dueño)
+const OWNER_UIDS = ["hnRLNmTe5uguxYWFNufET3YnGQL2"];
 
-// Colecciones (Firestore)
-const COL_USERS = "users";        // perfiles (docId recomendado: emailLower)
-const COL_CHECKINS = "checkins";  // checkins diarios
-const COL_BLOCKS = "blocks";      // bloqueos
+// Colecciones
+const COL_USERS = "users";
+const COL_CHECKINS = "checkins";
+const COL_BLOCKS = "blocks";
 
-// App init
+/** =========================
+ *  INIT
+ *  ========================= */
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Helpers
-const $ = (id) => document.getElementById(id);
+/** =========================
+ *  HELPERS
+ *  ========================= */
+const el = (id) => document.getElementById(id);
 
 const todayStr = () => {
   const d = new Date();
@@ -64,10 +71,10 @@ const todayStr = () => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const normEmail = (s) => (s || "").trim().toLowerCase();
+const normEmail = (s) => String(s || "").trim().toLowerCase();
 
 const normPlate = (s) =>
-  (s || "")
+  String(s || "")
     .toUpperCase()
     .replace(/\s+/g, "")
     .replace(/[^A-Z0-9]/g, "");
@@ -80,759 +87,667 @@ const escapeHtml = (s) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 
+const isOwner = (user) => !!user && OWNER_UIDS.includes(user.uid);
+
+// ✅ Compatibilidad: algunos docs vienen con `estado:"activo"` y otros con `status:"active"`
+function isUserActive(u) {
+  const s = String(u?.status || "").toLowerCase();
+  const e = String(u?.estado || "").toLowerCase();
+  return s === "active" || e === "activo";
+}
+function isUserPending(u) {
+  const s = String(u?.status || "").toLowerCase();
+  const e = String(u?.estado || "").toLowerCase();
+  return s === "pending" || e === "pendiente";
+}
+
+function formatPhoneChile(phone) {
+  let p = String(phone || "").replace(/\D/g, "");
+  if (!p) return "";
+  if (p.startsWith("56")) return p;
+  if (p.length === 9 && p.startsWith("9")) return "56" + p;
+  return p;
+}
+
+function whatsappLink(phone, msg) {
+  const p = formatPhoneChile(phone);
+  if (!p) return null;
+  return `https://wa.me/${p}?text=${encodeURIComponent(msg || "")}`;
+}
+
+// Dropdown sectores (lo que mostraste)
+const SECTORES = [
+  "Dirección",
+  "Dental",
+  "Farmacia",
+  "Ambulancia",
+  "UAC",
+  "Sector Rojo",
+  "Sector Amarillo",
+  "Transversal",
+  "Box Psicosocial",
+  "Sala ERA",
+  "Vacunatorio",
+  "Telesalud",
+  "Oirs/Sau",
+  "Esterilización",
+  "Bodega de Alimentos",
+  "Bodega de Farmacia",
+  "Dependencia Severa",
+  "Sala de Psicomotricidad",
+  "Sala de Estimulación DSM",
+  "Apoyo Clínico",
+  "Ex SIGGES"
+];
+
+/** =========================
+ *  UI BASE (CSS)
+ *  ========================= */
 function injectStyles() {
   const style = document.createElement("style");
   style.textContent = `
     :root{
-      --bg:#f3f6fb;
+      --bg:#eef2ff;
       --card:#ffffff;
       --ink:#0f172a;
-      --muted:#64748b;
-      --line:#dbe4f0;
+      --muted:#475569;
+      --line:#e2e8f0;
       --brand:#0f172a;
-      --brand2:#111827;
       --ok:#16a34a;
       --warn:#b45309;
-      --bad:#b91c1c;
-      --radius:16px;
+      --soft:#f8fafc;
+      --shadow: 0 10px 25px rgba(15,23,42,.08);
+      --radius:18px;
     }
     *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--ink)}
-    a{color:#2563eb;text-decoration:none}
-    .wrap{max-width:520px;margin:0 auto;padding:18px 16px 32px}
-    .toplogo{display:flex;justify-content:center;margin-top:10px}
-    .toplogo img{width:84px;height:auto}
-    h1{font-size:30px;margin:12px 0 2px;text-align:center}
-    .subtitle{color:var(--muted);text-align:center;margin:0 0 18px}
+    body{
+      margin:0;
+      font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;
+      background: radial-gradient(1200px 600px at 50% -100px, #dbeafe, var(--bg));
+      color:var(--ink);
+    }
+    .wrap{max-width:460px;margin:0 auto;padding:18px 16px 40px}
+    .topbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}
+    .pillUser{
+      display:flex;align-items:center;gap:8px;
+      padding:10px 12px;border:1px solid var(--line);background:#fff;border-radius:999px;
+      box-shadow: 0 6px 16px rgba(15,23,42,.06);
+      font-size:13px;color:var(--muted);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;
+    }
+    .btn{
+      border:0;border-radius:14px;padding:13px 14px;
+      background:linear-gradient(180deg,#111827,#0b1221);
+      color:#fff;font-weight:700;font-size:15px;
+      box-shadow: var(--shadow);
+      cursor:pointer;
+    }
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .btn.secondary{
+      background:#fff;color:var(--ink);
+      border:1px solid var(--line);
+      box-shadow:none;
+    }
+    .btn.link{
+      background:transparent;border:0;color:#2563eb;
+      padding:0;font-weight:600;box-shadow:none;
+      cursor:pointer;
+    }
+    .hero{text-align:center;margin-top:6px}
+    .logo{
+      width:92px;height:92px;object-fit:contain;
+      margin:6px auto 8px;display:block;
+    }
+    h1{margin:6px 0 0;font-size:34px;letter-spacing:-.5px}
+    .subtitle{margin:4px 0 0;color:var(--muted);font-size:18px}
     .card{
       background:var(--card);
       border:1px solid var(--line);
-      border-radius:20px;
+      border-radius:var(--radius);
+      box-shadow: var(--shadow);
       padding:16px;
-      box-shadow:0 10px 30px rgba(15,23,42,.05);
       margin:14px 0;
     }
     .install{
-      border:2px solid #bcd3ff;
-      background:#eef6ff;
+      border:2px solid #bfe0ff;
+      background:linear-gradient(180deg,#f0f9ff,#f8fafc);
+      color:#0c4a6e;
       padding:16px;
       border-radius:16px;
       text-align:center;
-      color:#0b4a6f;
-      font-weight:600;
+      font-weight:700;
     }
-    .install small{display:block;color:#1f4f7a;font-weight:500;margin-top:6px}
-    .cardTitle{
-      display:flex;gap:10px;align-items:center;margin:0 0 10px;
-      font-size:18px;font-weight:800;
+    .install small{display:block;margin-top:6px;font-weight:600;color:#334155}
+    .tabs{
+      display:flex;gap:10px;background:#f1f5f9;border-radius:999px;padding:6px;margin-top:10px;
     }
-    .hint{color:var(--muted);margin:0 0 10px;font-size:13px}
-    label{display:block;margin:10px 0 6px;color:var(--muted);font-size:13px}
+    .tab{
+      flex:1;border:0;border-radius:999px;padding:10px 12px;
+      background:transparent;color:#334155;font-weight:800;cursor:pointer;
+    }
+    .tab.active{background:#fff;border:1px solid var(--line);color:#0f172a}
+    label{display:block;margin:12px 0 6px;color:#334155;font-size:13px;font-weight:700}
     input,select{
       width:100%;
       padding:12px 12px;
-      border:1px solid var(--line);
-      border-radius:12px;
+      border-radius:14px;
+      border:1px solid #cbd5e1;
       font-size:16px;
-      outline:none;
       background:#fff;
     }
-    input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(147,197,253,.35)}
-    .btn{
-      width:100%;
-      margin-top:12px;
-      padding:12px 14px;
-      border-radius:12px;
-      border:1px solid var(--brand);
-      background:linear-gradient(180deg,var(--brand2),var(--brand));
-      color:#fff;
-      font-size:16px;
-      font-weight:700;
-      cursor:pointer;
-    }
-    .btn.secondary{
-      background:#fff;color:var(--ink);border-color:var(--line);
-      font-weight:700;
-    }
-    .btnRow{display:flex;gap:10px;flex-wrap:wrap}
-    .btnRow .btn{width:auto;flex:1}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    .tabs{display:flex;background:#f4f5f7;border:1px solid var(--line);padding:4px;border-radius:14px;gap:4px}
-    .tab{
-      flex:1;
-      padding:10px 12px;
-      text-align:center;
-      border-radius:12px;
-      cursor:pointer;
-      font-weight:700;
-      color:var(--muted);
-      user-select:none;
-    }
-    .tab.active{background:#fff;color:var(--ink);border:1px solid var(--line)}
-    .linksRow{display:flex;justify-content:space-between;align-items:center;margin-top:12px}
-    .linksRow a{font-weight:600}
-    .footer{color:var(--muted);text-align:center;margin-top:18px;font-size:13px}
+    .muted{color:var(--muted)}
     .ok{color:var(--ok);font-weight:800}
     .warn{color:var(--warn);font-weight:800}
-    .bad{color:var(--bad);font-weight:800}
-    .pill{display:inline-block;padding:6px 10px;border:1px solid var(--line);border-radius:999px;margin:6px 6px 0 0;background:#fff}
-    .hr{height:1px;background:var(--line);margin:14px 0}
-    .small{font-size:13px;color:var(--muted)}
-    .mini{font-size:12px;color:var(--muted)}
-    .topBar{
-      display:flex;justify-content:space-between;align-items:center;gap:10px;
-      margin:10px 0 0;
+    .footer{margin-top:20px;text-align:center;color:#94a3b8;font-weight:700}
+    .divider{height:1px;background:var(--line);margin:14px 0}
+    .mini{
+      font-size:12px;color:#64748b;margin-top:10px;
+      display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;
     }
-    .userChip{
-      padding:8px 10px;border:1px solid var(--line);border-radius:999px;background:#fff;
-      font-size:13px;color:var(--muted)
+    .titleRow{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+    .titleRow h3{margin:0;font-size:18px}
+    .pill{
+      display:inline-block;border:1px solid var(--line);border-radius:999px;
+      padding:6px 10px;margin:6px 6px 0 0;background:#fff;color:#0f172a;font-weight:800;
     }
+    .badge{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:10px 12px;border-radius:14px;border:1px solid var(--line);background:#fff;
+      font-weight:800;color:#0f172a;
+    }
+    .badge.ok{border-color:#bbf7d0;background:#f0fdf4;color:#166534}
+    .badge.warn{border-color:#fed7aa;background:#fff7ed;color:#9a3412}
   `;
   document.head.appendChild(style);
 }
 
-function renderToApp(html) {
-  const root = document.getElementById("app") || document.body;
-  root.innerHTML = html;
+/** =========================
+ *  DATA ACCESS
+ *  ========================= */
+
+// Perfil del usuario actual (doc id = email)
+async function getMyProfile(email) {
+  if (!email) return null;
+  const ref = doc(db, COL_USERS, normEmail(email));
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
 }
 
-// ==============================
-// Data access helpers
-// ==============================
-
-// Busca perfil por patente en users.plates (array-contains)
+// Buscar usuario por patente (plates array-contains)
 async function findUserByPlate(plate) {
   const qy = query(collection(db, COL_USERS), where("plates", "array-contains", plate));
-  const snap = await getDocs(qy);
-  if (snap.empty) return null;
-  const docu = snap.docs[0];
-  return { id: docu.id, ...docu.data() };
-}
-
-async function getMyProfileByEmail(emailLower) {
-  const ref = doc(db, COL_USERS, emailLower);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  return snap.data();
-}
-
-async function getTodayCheckinByUid(uid) {
-  const today = todayStr();
-  const qy = query(
-    collection(db, COL_CHECKINS),
-    where("uid", "==", uid),
-    where("date", "==", today)
-  );
   const snap = await getDocs(qy);
   if (snap.empty) return null;
   const d = snap.docs[0];
   return { id: d.id, ...d.data() };
 }
 
-// 🔥 Limpieza “diaria” (solo owner): borra checkins con date < hoy
-// OJO: requiere Rules que permitan delete al OWNER.
-async function ownerCleanupOldCheckins() {
-  const today = todayStr();
-  const snap = await getDocs(collection(db, COL_CHECKINS));
-  let del = 0;
+// Checkin de hoy por uid
+async function getTodayCheckinByUid(uid) {
+  if (!uid) return null;
+  const id = `${uid}_${todayStr()}`;
+  const ref = doc(db, COL_CHECKINS, id);
+  const snap = await getDoc(ref);
+  return snap.exists() ? snap.data() : null;
+}
 
-  for (const d of snap.docs) {
+// Limpieza: borrar checkins antiguos del usuario (si tus Rules permiten delete al propio uid)
+async function cleanupOldCheckinsForMe(uid) {
+  if (!uid) return;
+  const t = todayStr();
+  const qy = query(collection(db, COL_CHECKINS), where("uid", "==", uid));
+  const snap = await getDocs(qy);
+  const deletions = [];
+  snap.forEach((d) => {
     const data = d.data();
-    const date = String(data.date || "");
-    if (date && date < today) {
-      try {
-        await deleteDoc(doc(db, COL_CHECKINS, d.id));
-        del++;
-      } catch (e) {
-        console.warn("No pude borrar checkin antiguo:", d.id, e);
-      }
-    }
+    if (data?.date && data.date !== t) deletions.push(deleteDoc(doc(db, COL_CHECKINS, d.id)));
+  });
+  if (deletions.length) {
+    try { await Promise.allSettled(deletions); } catch {}
   }
-  return del;
 }
 
-function whatsappLink(phone, msg) {
-  let p = (phone || "").replace(/\D/g, "");
-  if (p.startsWith("56")) {
-    // ok
-  } else if (p.length === 9 && p.startsWith("9")) {
-    p = "56" + p;
-  }
-  const text = encodeURIComponent(msg || "");
-  return `https://wa.me/${p}?text=${text}`;
-}
-
-// ==============================
-// UI: Landing / Login / Signup
-// ==============================
-
-function landingHtml() {
-  return `
+/** =========================
+ *  RENDER: LANDING (Login/Create)
+ *  ========================= */
+function renderLanding({ defaultTab = "login" } = {}) {
+  const tabLogin = defaultTab === "login";
+  document.body.innerHTML = `
     <div class="wrap">
-      <div class="toplogo">
-        <img src="./logo-cesfam.png" alt="CESFAM Karol Wojtyla" />
-      </div>
-
-      <h1>Estacionamiento CESFAM</h1>
-      <p class="subtitle">Karol Wojtyla - Puente Alto</p>
-
-      <div class="install">
-        ¡Instala esta app! <small>Toca <b>Compartir</b> y luego "Agregar a pantalla de inicio"</small>
+      <div class="hero">
+        <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
+        <h1>Estacionamiento CESFAM</h1>
+        <div class="subtitle">Karol Wojtyla - Puente Alto</div>
       </div>
 
       <div class="card">
-        <div class="cardTitle">👤 Acceso Personal CESFAM</div>
-        <p class="hint">Inicia sesión con tu correo (Gmail, Hotmail, Yahoo, etc.)</p>
-
-        <div class="tabs">
-          <div class="tab active" id="tabLogin">Iniciar Sesión</div>
-          <div class="tab" id="tabSignup">Crear Cuenta</div>
-        </div>
-
-        <div id="panelLogin" style="margin-top:12px;">
-          <label>Correo electrónico</label>
-          <input id="email" type="email" placeholder="tu@email.cl" autocomplete="username" />
-
-          <label>Contraseña</label>
-          <input id="pass" type="password" placeholder="********" autocomplete="current-password" />
-
-          <button class="btn" id="btnLogin">Iniciar Sesión</button>
-
-          <div class="linksRow">
-            <a href="#" id="lnkReset">¿Olvidaste tu contraseña?</a>
-            <a href="#" id="lnkVisitor">👥 Entrar como visita</a>
-          </div>
-
-          <div id="msg" class="small" style="margin-top:10px;"></div>
-        </div>
-
-        <div id="panelSignup" style="margin-top:12px;display:none;">
-          <label>Correo electrónico</label>
-          <input id="semail" type="email" placeholder="tu@email.cl" autocomplete="username" />
-
-          <label>Contraseña</label>
-          <input id="spass" type="password" placeholder="Mínimo 8 caracteres" autocomplete="new-password" />
-
-          <label>Confirmar contraseña</label>
-          <input id="spass2" type="password" placeholder="Repite tu contraseña" autocomplete="new-password" />
-
-          <button class="btn" id="btnSignup">Crear Cuenta</button>
-          <div id="smsg" class="small" style="margin-top:10px;"></div>
-          <div class="mini" style="margin-top:8px;">
-            * Tu cuenta quedará <b>pendiente</b> hasta que el administrador la autorice.
-          </div>
+        <div class="install">
+          ¡Instala esta app!
+          <small>Toca <b>Compartir</b> y luego "Agregar a pantalla de inicio"</small>
         </div>
       </div>
 
-      <button class="btn secondary" id="btnStaffReg">👥 Inscripción de Funcionario</button>
+      <div class="card">
+        <div class="titleRow">
+          <div style="font-size:20px">👤</div>
+          <h3>Acceso Personal CESFAM</h3>
+        </div>
+        <div class="muted" style="margin-top:6px">
+          Inicia sesión con tu correo (Gmail, Hotmail, Yahoo, etc.)
+        </div>
+
+        <div class="tabs">
+          <button id="tabLogin" class="tab ${tabLogin ? "active" : ""}">Iniciar Sesión</button>
+          <button id="tabCreate" class="tab ${!tabLogin ? "active" : ""}">Crear Cuenta</button>
+        </div>
+
+        <div id="panel"></div>
+
+        <div class="mini">
+          <button id="btnForgot" class="btn link">¿Olvidaste tu contraseña?</button>
+          <button id="btnVisitor" class="btn link">👥 Entrar como visita</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <button id="btnRegFuncionario" class="btn secondary" style="width:100%">
+          ➕ Inscripción de Funcionario
+        </button>
+
+        <div id="msg" class="muted" style="margin-top:10px"></div>
+      </div>
 
       <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
     </div>
   `;
-}
 
-function wireLandingHandlers() {
-  // Tabs
-  const setTab = (mode) => {
-    const isLogin = mode === "login";
-    $("tabLogin").classList.toggle("active", isLogin);
-    $("tabSignup").classList.toggle("active", !isLogin);
-    $("panelLogin").style.display = isLogin ? "block" : "none";
-    $("panelSignup").style.display = isLogin ? "none" : "block";
-  };
+  el("tabLogin").onclick = () => renderLanding({ defaultTab: "login" });
+  el("tabCreate").onclick = () => renderLanding({ defaultTab: "create" });
 
-  $("tabLogin").onclick = () => setTab("login");
-  $("tabSignup").onclick = () => setTab("signup");
+  const panel = el("panel");
+  panel.innerHTML = tabLogin ? renderLoginPanelHtml() : renderCreatePanelHtml();
 
-  // Login
-  $("btnLogin").onclick = async () => {
-    $("msg").textContent = "Entrando...";
+  wireLoginCreate(tabLogin);
+
+  el("btnRegFuncionario").onclick = () => renderRegisterWizard();
+  el("btnForgot").onclick = () => renderForgotPassword();
+  el("btnVisitor").onclick = async () => {
+    el("msg").textContent = "Entrando como visita…";
     try {
-      await signInWithEmailAndPassword(auth, $("email").value.trim(), $("pass").value);
+      await signInAnonymously(auth);
+      // si tus Rules no permiten, lo verás al buscar
     } catch (e) {
       console.error(e);
-      $("msg").innerHTML = `<span class="bad">❌ No pude iniciar sesión.</span> Revisa email/clave o habilitación de Auth.`;
+      el("msg").innerHTML = `<span class="warn">❌ No pude entrar como visita. (Activa “Anonymous” en Firebase Auth o usa login)</span>`;
     }
   };
+}
 
-  // Reset password
-  $("lnkReset").onclick = async (ev) => {
-    ev.preventDefault();
-    const email = normEmail($("email").value);
-    if (!email) {
-      $("msg").innerHTML = `<span class="warn">⚠️ Escribe tu correo arriba y vuelve a tocar “¿Olvidaste tu contraseña?”.</span>`;
-      return;
+function renderLoginPanelHtml() {
+  return `
+    <label>Correo electrónico</label>
+    <input id="email" type="email" placeholder="tu@email.cl" autocomplete="username" />
+
+    <label>Contraseña</label>
+    <input id="pass" type="password" placeholder="********" autocomplete="current-password" />
+
+    <div style="margin-top:14px">
+      <button id="btnLogin" class="btn" style="width:100%">Iniciar Sesión</button>
+    </div>
+  `;
+}
+
+function renderCreatePanelHtml() {
+  return `
+    <div class="muted" style="margin-top:8px">
+      Para crear cuenta como funcionario usa “Inscripción de Funcionario” (abajo).
+    </div>
+  `;
+}
+
+function wireLoginCreate(isLoginTab) {
+  if (!isLoginTab) return;
+
+  el("btnLogin").onclick = async () => {
+    const email = normEmail(el("email").value);
+    const pass = el("pass").value;
+    el("msg").textContent = "Iniciando sesión…";
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (e) {
+      console.error(e);
+      el("msg").innerHTML = `<span class="warn">❌ Email/clave incorrectos o Auth no habilitado.</span>`;
     }
-    $("msg").textContent = "Enviando correo de recuperación...";
+  };
+}
+
+function renderForgotPassword() {
+  document.body.innerHTML = `
+    <div class="wrap">
+      <div class="card">
+        <div class="titleRow"><div style="font-size:20px">🔐</div><h3>Recuperar contraseña</h3></div>
+        <div class="muted">Te enviaremos un correo para restablecer tu clave.</div>
+
+        <label>Correo</label>
+        <input id="fpEmail" type="email" placeholder="tu@email.cl" />
+
+        <div style="margin-top:14px" class="row">
+          <button id="btnBack" class="btn secondary">Volver</button>
+          <button id="btnSend" class="btn">Enviar</button>
+        </div>
+
+        <div id="fpMsg" class="muted" style="margin-top:10px"></div>
+      </div>
+    </div>
+  `;
+  el("btnBack").onclick = () => renderLanding({ defaultTab: "login" });
+  el("btnSend").onclick = async () => {
+    const email = normEmail(el("fpEmail").value);
+    el("fpMsg").textContent = "Enviando…";
     try {
       await sendPasswordResetEmail(auth, email);
-      $("msg").innerHTML = `<span class="ok">✅ Listo.</span> Revisa tu correo para recuperar contraseña.`;
+      el("fpMsg").innerHTML = `<span class="ok">✅ Listo. Revisa tu correo.</span>`;
     } catch (e) {
       console.error(e);
-      $("msg").innerHTML = `<span class="bad">❌ No pude enviar el correo.</span>`;
+      el("fpMsg").innerHTML = `<span class="warn">❌ No pude enviar. Revisa el correo o Auth.</span>`;
     }
   };
-
-  // Visitor
-  $("lnkVisitor").onclick = (ev) => {
-    ev.preventDefault();
-    renderVisitor();
-  };
-
-  // Signup rápido (solo crea cuenta + perfil pendiente básico)
-  $("btnSignup").onclick = async () => {
-    const email = normEmail($("semail").value);
-    const p1 = $("spass").value || "";
-    const p2 = $("spass2").value || "";
-
-    $("smsg").textContent = "Creando cuenta...";
-    if (!email) {
-      $("smsg").innerHTML = `<span class="warn">⚠️ Falta correo.</span>`;
-      return;
-    }
-    if (p1.length < 8) {
-      $("smsg").innerHTML = `<span class="warn">⚠️ Contraseña mínimo 8 caracteres.</span>`;
-      return;
-    }
-    if (p1 !== p2) {
-      $("smsg").innerHTML = `<span class="warn">⚠️ Las contraseñas no coinciden.</span>`;
-      return;
-    }
-
-    try {
-      const cred = await createUserWithEmailAndPassword(auth, email, p1);
-
-      // Perfil pendiente (sin datos)
-      const uid = cred.user.uid;
-      await setDoc(doc(db, COL_USERS, email), {
-        uid,
-        email,
-        status: "pending",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: "self_signup"
-      }, { merge: true });
-
-      $("smsg").innerHTML = `<span class="ok">✅ Cuenta creada.</span> Quedó <b>pendiente</b> de autorización.`;
-    } catch (e) {
-      console.error(e);
-      $("smsg").innerHTML = `<span class="bad">❌ No pude crear la cuenta.</span> (¿Ya existe ese correo?)`;
-    }
-  };
-
-  // Staff registration
-  $("btnStaffReg").onclick = () => renderStaffRegStep1();
 }
 
-// ==============================
-// Visitor mode (solo búsqueda)
-// ==============================
-function renderVisitor() {
-  renderToApp(`
-    <div class="wrap">
-      <div class="toplogo">
-        <img src="./logo-cesfam.png" alt="CESFAM" />
-      </div>
+/** =========================
+ *  REGISTRO (wizard 3 pasos)
+ *  ========================= */
+function renderRegisterWizard(state = { step: 1, plates: [""] }) {
+  const step = state.step;
 
-      <h1>Estacionamiento CESFAM</h1>
-      <p class="subtitle">Modo visita (solo búsqueda)</p>
+  const step1 = `
+    <div class="titleRow"><div style="font-size:20px">🛡️</div><h3>Registro Seguro</h3></div>
+    <div style="font-weight:900;font-size:20px;margin-top:8px">Inscripción de Funcionario</div>
+    <div class="muted">Paso 1 de 3: Cuenta de acceso</div>
+
+    <label>Correo electrónico</label>
+    <input id="rEmail" type="email" placeholder="tu@gmail.com, tu@hotmail.com, etc." value="${escapeHtml(state.email || "")}" />
+
+    <label>Contraseña</label>
+    <input id="rPass" type="password" placeholder="Mínimo 8 caracteres" />
+
+    <label>Confirmar contraseña</label>
+    <input id="rPass2" type="password" placeholder="Repite tu contraseña" />
+
+    <div class="row" style="margin-top:14px">
+      <button id="btnBack" class="btn secondary">Volver</button>
+      <button id="btnNext" class="btn">Siguiente</button>
+    </div>
+
+    <div id="rMsg" class="muted" style="margin-top:10px"></div>
+  `;
+
+  const step2 = `
+    <div class="titleRow"><div style="font-size:20px">🛡️</div><h3>Registro Seguro</h3></div>
+    <div style="font-weight:900;font-size:20px;margin-top:8px">Inscripción de Funcionario</div>
+    <div class="muted">Paso 2 de 3: Datos personales</div>
+
+    <label>Nombre completo</label>
+    <input id="rName" placeholder="Ej: María González Pérez" value="${escapeHtml(state.name || "")}" />
+
+    <label>RUT</label>
+    <input id="rRut" placeholder="Ej: 12345678-9" value="${escapeHtml(state.rut || "")}" />
+    <div class="muted" style="font-size:12px;margin-top:6px">Ingresa RUT sin puntos ni guión</div>
+
+    <label>Teléfono</label>
+    <input id="rPhone" placeholder="Ej: 912345678" value="${escapeHtml(state.phone || "")}" />
+
+    <div class="row" style="margin-top:14px">
+      <button id="btnPrev" class="btn secondary">Anterior</button>
+      <button id="btnNext" class="btn">Siguiente</button>
+    </div>
+
+    <div id="rMsg" class="muted" style="margin-top:10px"></div>
+  `;
+
+  const platesHtml = (state.plates || [""]).map(
+    (p, idx) => `
+      <label>${idx === 0 ? "Patente(s) de tu(s) vehículo(s)" : "Patente adicional"}</label>
+      <input class="plateInput" data-i="${idx}" placeholder="Ej: ABCD12" value="${escapeHtml(p)}" />
+    `
+  ).join("");
+
+  const options = SECTORES.map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("");
+
+  const step3 = `
+    <div class="titleRow"><div style="font-size:20px">🛡️</div><h3>Registro Seguro</h3></div>
+    <div style="font-weight:900;font-size:20px;margin-top:8px">Inscripción de Funcionario</div>
+    <div class="muted">Paso 3 de 3: Información de vehículos</div>
+
+    ${platesHtml}
+
+    <button id="btnAddPlate" class="btn secondary" style="width:100%;margin-top:10px">＋ Agregar otra patente</button>
+
+    <label style="margin-top:14px">Unidad/Sector donde trabaja</label>
+    <select id="rSector">
+      <option value="">Selecciona tu unidad</option>
+      ${options}
+    </select>
+
+    <label style="margin-top:14px;display:flex;gap:10px;align-items:flex-start">
+      <input id="rTerms" type="checkbox" style="width:auto;margin-top:3px" ${state.terms ? "checked" : ""}/>
+      <span>
+        Acepto los <a href="#" id="termsLink">Términos y Condiciones</a><br/>
+        <span class="muted" style="font-size:12px">Conforme a la Ley 19.628 sobre protección de la vida privada</span>
+      </span>
+    </label>
+
+    <div class="row" style="margin-top:14px">
+      <button id="btnPrev" class="btn secondary">Anterior</button>
+      <button id="btnFinish" class="btn">Completar Registro</button>
+    </div>
+
+    <div style="margin-top:16px">
+      <button id="btnHome" class="btn link">← Volver al inicio</button>
+    </div>
+
+    <div id="rMsg" class="muted" style="margin-top:10px"></div>
+  `;
+
+  document.body.innerHTML = `
+    <div class="wrap">
+      <div class="hero">
+        <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
+        <h1 style="font-size:28px">Completa tu Registro</h1>
+        <div class="subtitle" style="font-size:16px">Ingresa tus datos de funcionario</div>
+      </div>
 
       <div class="card">
-        <div class="cardTitle">🔎 Buscar por patente</div>
-
-        <label>Patente</label>
-        <input id="vPlate" placeholder="Ej: KHDC46" />
-        <button class="btn" id="vSearch">Buscar</button>
-
-        <div id="vRes" class="small" style="margin-top:10px;"></div>
+        ${step === 1 ? step1 : step === 2 ? step2 : step3}
       </div>
-
-      <button class="btn secondary" id="backHome">← Volver</button>
-      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
     </div>
-  `);
+  `;
 
-  $("backHome").onclick = () => renderLanding();
-  $("vSearch").onclick = async () => {
-    const plate = normPlate($("vPlate").value);
-    $("vRes").textContent = "Buscando...";
-    if (!plate) {
-      $("vRes").innerHTML = `<span class="warn">⚠️ Escribe una patente.</span>`;
-      return;
-    }
+  // Wire common
+  if (step === 1) {
+    el("btnBack").onclick = () => renderLanding({ defaultTab: "login" });
+    el("btnNext").onclick = () => {
+      const email = normEmail(el("rEmail").value);
+      const pass = el("rPass").value;
+      const pass2 = el("rPass2").value;
 
-    try {
-      const found = await findUserByPlate(plate);
-      if (!found || found.status !== "active") {
-        $("vRes").innerHTML = `<span class="warn">⚠️ No encontré esa patente (o el usuario no está autorizado).</span>`;
-        return;
-      }
+      if (!email) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Falta correo.</span>`);
+      if (!pass || pass.length < 8) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Clave mínimo 8 caracteres.</span>`);
+      if (pass !== pass2) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Las claves no coinciden.</span>`);
 
-      const name = found.name || "(sin nombre)";
-      const phone = found.phone || "(sin teléfono)";
-      const sectorHabitual = found.sector || "(sin sector)";
-      const wa = (!phone || String(phone).includes("sin"))
-        ? null
-        : whatsappLink(phone, `Hola ${name}. Te contacto por Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`);
-
-      $("vRes").innerHTML = `
-        <div><b>${escapeHtml(name)}</b></div>
-        <div>📞 ${escapeHtml(phone)}</div>
-        <div>🏥 Sector habitual: <b>${escapeHtml(sectorHabitual)}</b></div>
-        <div class="muted" style="margin-top:6px;">
-          Patentes: ${(found.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}
-        </div>
-        ${wa ? `<a href="${wa}" target="_blank"><button class="btn" style="margin-top:10px;">📲 Enviar WhatsApp</button></a>`
-             : `<div class="warn" style="margin-top:10px;">⚠️ No puedo armar WhatsApp (falta teléfono).</div>`
-        }
-      `;
-    } catch (e) {
-      console.error(e);
-      $("vRes").innerHTML = `<span class="bad">❌ Error buscando. Revisa consola.</span>`;
-    }
-  };
-}
-
-// ==============================
-// Staff registration (3 pasos) + pendiente de aprobación
-// ==============================
-
-const SECTORS = [
-  "Dirección","Dental","Farmacia","Ambulancia","UAC",
-  "Sector Rojo","Sector Amarillo","Transversal","Box Psicosocial",
-  "Sala ERA","Vacunatorio","Telesalud","Oirs/Sau","Esterilización",
-  "Bodega de Alimentos","Bodega de Farmacia","Dependencia Severa",
-  "Sala de Psicomotricidad","Sala de Estimulación DSM","Apoyo Clínico","Ex SIGGES"
-];
-
-let REG = {
-  email: "",
-  pass: "",
-  pass2: "",
-  name: "",
-  rut: "",
-  phone: "",
-  plates: [],
-  sector: "",
-  accepted: false
-};
-
-function renderStaffRegStep1() {
-  REG = { email:"", pass:"", pass2:"", name:"", rut:"", phone:"", plates:[], sector:"", accepted:false };
-
-  renderToApp(`
-    <div class="wrap">
-      <div class="toplogo"><img src="./logo-cesfam.png" alt="CESFAM" /></div>
-      <h1>Completa tu Registro</h1>
-      <p class="subtitle">Ingresa tus datos de funcionario</p>
-
-      <div class="card">
-        <div class="cardTitle">🛡️ Registro Seguro</div>
-        <div class="hint"><b>Inscripción de Funcionario</b><br/>Paso 1 de 3: Cuenta de acceso</div>
-
-        <label>Correo electrónico</label>
-        <input id="rEmail" type="email" placeholder="tu@gmail.com, tu@hotmail.com, etc." />
-
-        <label>Contraseña</label>
-        <input id="rPass" type="password" placeholder="Mínimo 8 caracteres" />
-
-        <label>Confirmar contraseña</label>
-        <input id="rPass2" type="password" placeholder="Repite tu contraseña" />
-
-        <button class="btn" id="next1">Siguiente</button>
-        <div id="rMsg1" class="small" style="margin-top:10px;"></div>
-      </div>
-
-      <button class="btn secondary" id="backHome">← Volver al inicio</button>
-      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
-    </div>
-  `);
-
-  $("backHome").onclick = () => renderLanding();
-
-  $("next1").onclick = () => {
-    const email = normEmail($("rEmail").value);
-    const p1 = $("rPass").value || "";
-    const p2 = $("rPass2").value || "";
-
-    $("rMsg1").textContent = "";
-    if (!email) { $("rMsg1").innerHTML = `<span class="warn">⚠️ Falta correo.</span>`; return; }
-    if (p1.length < 8) { $("rMsg1").innerHTML = `<span class="warn">⚠️ Contraseña mínimo 8 caracteres.</span>`; return; }
-    if (p1 !== p2) { $("rMsg1").innerHTML = `<span class="warn">⚠️ Las contraseñas no coinciden.</span>`; return; }
-
-    REG.email = email; REG.pass = p1; REG.pass2 = p2;
-    renderStaffRegStep2();
-  };
-}
-
-function renderStaffRegStep2() {
-  renderToApp(`
-    <div class="wrap">
-      <div class="toplogo"><img src="./logo-cesfam.png" alt="CESFAM" /></div>
-      <h1>Completa tu Registro</h1>
-      <p class="subtitle">Ingresa tus datos de funcionario</p>
-
-      <div class="card">
-        <div class="cardTitle">🛡️ Registro Seguro</div>
-        <div class="hint"><b>Inscripción de Funcionario</b><br/>Paso 2 de 3: Datos personales</div>
-
-        <label>Nombre completo</label>
-        <input id="rName" placeholder="Ej: María González Pérez" />
-
-        <label>RUT</label>
-        <input id="rRut" placeholder="Ej: 12345678-9" />
-        <div class="mini">Ingresa RUT sin puntos ni guión</div>
-
-        <label>Teléfono</label>
-        <input id="rPhone" placeholder="Ej: 912345678" />
-
-        <div class="btnRow">
-          <button class="btn secondary" id="prev2">Anterior</button>
-          <button class="btn" id="next2">Siguiente</button>
-        </div>
-
-        <div id="rMsg2" class="small" style="margin-top:10px;"></div>
-      </div>
-
-      <button class="btn secondary" id="backHome">← Volver al inicio</button>
-      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
-    </div>
-  `);
-
-  $("backHome").onclick = () => renderLanding();
-  $("prev2").onclick = () => renderStaffRegStep1();
-
-  $("next2").onclick = () => {
-    const name = ($("rName").value || "").trim();
-    const rut = ($("rRut").value || "").trim();
-    const phone = ($("rPhone").value || "").trim();
-
-    $("rMsg2").textContent = "";
-    if (!name) { $("rMsg2").innerHTML = `<span class="warn">⚠️ Falta nombre.</span>`; return; }
-
-    REG.name = name; REG.rut = rut; REG.phone = phone;
-    renderStaffRegStep3();
-  };
-}
-
-function renderStaffRegStep3() {
-  renderToApp(`
-    <div class="wrap">
-      <div class="toplogo"><img src="./logo-cesfam.png" alt="CESFAM" /></div>
-      <h1>Completa tu Registro</h1>
-      <p class="subtitle">Ingresa tus datos de funcionario</p>
-
-      <div class="card">
-        <div class="cardTitle">🛡️ Registro Seguro</div>
-        <div class="hint"><b>Inscripción de Funcionario</b><br/>Paso 3 de 3: Información de vehículos</div>
-
-        <label>Patente(s) de tu(s) vehículo(s)</label>
-        <div class="mini">Puedes agregar más de una patente si tienes varios vehículos</div>
-        <input id="plateInput" placeholder="Ej: ABCD12" />
-
-        <button class="btn secondary" id="addPlate">＋ Agregar otra patente</button>
-
-        <div id="plateList" class="small" style="margin-top:10px;"></div>
-
-        <label style="margin-top:14px;">Unidad/Sector donde trabaja</label>
-        <select id="sectorSel">
-          <option value="">Selecciona tu unidad</option>
-          ${SECTORS.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("")}
-        </select>
-
-        <label style="margin-top:14px;display:flex;gap:10px;align-items:flex-start;">
-          <input id="terms" type="checkbox" style="width:auto;margin-top:3px;" />
-          <span>
-            Acepto los <a href="#" id="termsLink">Términos y Condiciones</a>
-            <div class="mini">Conforme a la Ley 19.628 sobre protección de la vida privada</div>
-          </span>
-        </label>
-
-        <div class="btnRow">
-          <button class="btn secondary" id="prev3">Anterior</button>
-          <button class="btn" id="finish">Completar Registro</button>
-        </div>
-
-        <div id="rMsg3" class="small" style="margin-top:10px;"></div>
-      </div>
-
-      <button class="btn secondary" id="backHome">← Volver al inicio</button>
-      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
-    </div>
-  `);
-
-  $("backHome").onclick = () => renderLanding();
-  $("prev3").onclick = () => renderStaffRegStep2();
-
-  const refreshPlates = () => {
-    $("plateList").innerHTML = REG.plates.length
-      ? `<div class="mini">Patentes agregadas:</div>${REG.plates.map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}`
-      : `<span class="muted">Aún no agregas patentes.</span>`;
-  };
-  refreshPlates();
-
-  $("addPlate").onclick = () => {
-    const p = normPlate($("plateInput").value);
-    $("rMsg3").textContent = "";
-    if (!p) { $("rMsg3").innerHTML = `<span class="warn">⚠️ Escribe una patente válida.</span>`; return; }
-    if (!REG.plates.includes(p)) REG.plates.push(p);
-    $("plateInput").value = "";
-    refreshPlates();
-  };
-
-  $("termsLink").onclick = (ev) => {
-    ev.preventDefault();
-    alert("Términos: Uso interno CESFAM. Los datos se usan solo para contacto por estacionamiento.");
-  };
-
-  $("finish").onclick = async () => {
-    const sector = ($("sectorSel").value || "").trim();
-    const accepted = $("terms").checked;
-
-    $("rMsg3").textContent = "Creando cuenta y guardando datos...";
-    if (REG.plates.length === 0) { $("rMsg3").innerHTML = `<span class="warn">⚠️ Agrega al menos 1 patente.</span>`; return; }
-    if (!sector) { $("rMsg3").innerHTML = `<span class="warn">⚠️ Selecciona tu unidad/sector.</span>`; return; }
-    if (!accepted) { $("rMsg3").innerHTML = `<span class="warn">⚠️ Debes aceptar términos.</span>`; return; }
-
-    REG.sector = sector;
-    REG.accepted = accepted;
-
-    try {
-      // 1) Crear cuenta Auth
-      const cred = await createUserWithEmailAndPassword(auth, REG.email, REG.pass);
-      const uid = cred.user.uid;
-
-      // 2) Guardar perfil PENDIENTE en Firestore (docId=emailLower)
-      await setDoc(doc(db, COL_USERS, REG.email), {
-        uid,
-        email: REG.email,
-        status: "pending",
-        name: REG.name,
-        rut: REG.rut,
-        phone: REG.phone,
-        plates: REG.plates,
-        sector: REG.sector,     // 👈 habitual
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: "staff_registration"
-      }, { merge: true });
-
-      $("rMsg3").innerHTML = `<span class="ok">✅ Registro enviado.</span> Quedaste <b>pendiente</b> de autorización.`;
-    } catch (e) {
-      console.error(e);
-      $("rMsg3").innerHTML = `<span class="bad">❌ No pude completar el registro.</span> (¿Ya existe ese correo?)`;
-    }
-  };
-}
-
-// ==============================
-// Logged-in App (activo / pendiente / owner)
-// ==============================
-
-function renderPending(user, profile) {
-  const email = user.email || "";
-  renderToApp(`
-    <div class="wrap">
-      <div class="toplogo"><img src="./logo-cesfam.png" alt="CESFAM" /></div>
-      <h1>Estacionamiento CESFAM</h1>
-      <p class="subtitle">Karol Wojtyla - Puente Alto</p>
-
-      <div class="card">
-        <div class="cardTitle">⏳ Cuenta pendiente</div>
-        <div class="small">👤 Sesión activa: <b>${escapeHtml(email)}</b></div>
-        <div class="hr"></div>
-        <div class="warn">⚠️ Tu cuenta aún no está autorizada por el administrador.</div>
-        <div class="small" style="margin-top:8px;">
-          Cuando te activen, podrás buscar patentes y hacer check-in.
-        </div>
-
-        <button class="btn secondary" id="btnLogout" style="margin-top:14px;">Cerrar sesión</button>
-      </div>
-
-      <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
-    </div>
-  `);
-
-  $("btnLogout").onclick = () => signOut(auth);
-}
-
-async function renderActiveApp(user, profile) {
-  const email = user.email || "";
-  const uid = user.uid;
-  const today = todayStr();
-  const isOwner = OWNER_UIDS.has(uid);
-
-  // Si es owner, intenta limpiar checkins antiguos
-  let cleaned = 0;
-  if (isOwner) {
-    try { cleaned = await ownerCleanupOldCheckins(); } catch {}
+      renderRegisterWizard({ ...state, step: 2, email, pass });
+    };
   }
 
-  // Intentar checkin de hoy (para mostrarlo)
-  let myToday = null;
-  try { myToday = await getTodayCheckinByUid(uid); } catch {}
+  if (step === 2) {
+    el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 1 });
+    el("btnNext").onclick = () => {
+      const name = String(el("rName").value || "").trim();
+      const rut = String(el("rRut").value || "").trim();
+      const phone = String(el("rPhone").value || "").trim();
+      if (!name) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Falta nombre.</span>`);
+      renderRegisterWizard({ ...state, step: 3, name, rut, phone });
+    };
+  }
 
-  renderToApp(`
+  if (step === 3) {
+    el("btnHome").onclick = () => renderLanding({ defaultTab: "login" });
+
+    el("btnAddPlate").onclick = () => {
+      const plates = readPlatesFromInputs();
+      plates.push("");
+      renderRegisterWizard({ ...state, plates });
+    };
+
+    el("termsLink").onclick = (ev) => {
+      ev.preventDefault();
+      alert("Términos y Condiciones (pendiente): se recomienda enlazar a un PDF o página oficial.");
+    };
+
+    el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 2 });
+
+    el("btnFinish").onclick = async () => {
+      const plates = readPlatesFromInputs().map(normPlate).filter(Boolean);
+      const sector = String(el("rSector").value || "").trim();
+      const terms = !!el("rTerms").checked;
+
+      if (!plates.length) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Agrega al menos 1 patente.</span>`);
+      if (!sector) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Selecciona tu unidad/sector.</span>`);
+      if (!terms) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Debes aceptar los términos.</span>`);
+
+      el("rMsg").textContent = "Creando cuenta…";
+
+      try {
+        const email = state.email;
+        const pass = state.pass;
+
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        const user = cred.user;
+
+        // Nombre visible (opcional)
+        try { await updateProfile(user, { displayName: state.name }); } catch {}
+
+        // Guardar perfil en Firestore (PENDIENTE aprobación)
+        const profile = {
+          uid: user.uid,
+          email: normEmail(email),
+          username: state.name?.split(" ")[0] || "",
+          name: state.name || "",
+          rut: state.rut || "",
+          phone: state.phone || "",
+          plates,
+          sector,                  // ✅ campo habitual
+          unit: sector,            // compat (por si algo viejo pide unit)
+          status: "pending",
+          estado: "pendiente",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          source: "self_register"
+        };
+
+        await setDoc(doc(db, COL_USERS, normEmail(email)), profile, { merge: true });
+
+        el("rMsg").innerHTML = `<span class="ok">✅ Cuenta creada. Queda pendiente de autorización del dueño.</span>`;
+      } catch (e) {
+        console.error(e);
+        el("rMsg").innerHTML = `<span class="warn">❌ No pude crear la cuenta. (¿Email ya existe? ¿Auth habilitado?)</span>`;
+      }
+    };
+
+    function readPlatesFromInputs() {
+      const nodes = document.querySelectorAll(".plateInput");
+      const arr = [];
+      nodes.forEach((n) => arr.push(n.value));
+      return arr;
+    }
+  }
+}
+
+/** =========================
+ *  APP (logged-in)
+ *  ========================= */
+async function renderApp(user) {
+  const email = normEmail(user.email || "");
+  const uid = user.uid;
+
+  // Perfil
+  const myProfile = user.isAnonymous ? null : await getMyProfile(email);
+
+  // Si no hay perfil y no es anon: igual mostramos (pero avisamos)
+  const mySector = myProfile?.sector || myProfile?.unit || "";
+  const myPlates = Array.isArray(myProfile?.plates) ? myProfile.plates : [];
+
+  // Limpieza checkins antiguos (solo del usuario)
+  // (si tus Rules no permiten delete, no rompe: solo fallará silencioso)
+  await cleanupOldCheckinsForMe(uid);
+
+  document.body.innerHTML = `
     <div class="wrap">
-      <div class="topBar">
-        <div class="userChip">👤 ${escapeHtml(email)}</div>
-        <button class="btn secondary" id="btnLogout" style="width:auto;margin:0;">Cerrar sesión</button>
+      <div class="topbar">
+        <div class="pillUser">👤 ${escapeHtml(user.isAnonymous ? "Visita" : email)}</div>
+        <button id="btnLogout" class="btn secondary">Cerrar sesión</button>
       </div>
 
-      <div class="toplogo" style="margin-top:14px;"><img src="./logo-cesfam.png" alt="CESFAM" /></div>
-      <h1>Estacionamiento CESFAM</h1>
-      <p class="subtitle">Karol Wojtyla - Puente Alto</p>
+      <div class="hero" style="margin-top:0">
+        <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
+        <h1>Estacionamiento<br/>CESFAM</h1>
+        <div class="subtitle">Karol Wojtyla - Puente Alto</div>
+      </div>
 
-      ${isOwner ? `
-        <div class="card">
-          <div class="cardTitle">🛠️ Admin (Dueño)</div>
-          <div class="small">UID: <b>${escapeHtml(uid)}</b></div>
-          ${cleaned ? `<div class="ok">✅ Limpieza: borré ${cleaned} check-in(s) antiguos.</div>` : `<div class="small">Limpieza diaria: OK.</div>`}
-          <button class="btn" id="btnAdmin">Ver pendientes de autorización</button>
-          <div id="adminBox" class="small" style="margin-top:10px;"></div>
+      ${isOwner(user) ? `
+      <div class="card">
+        <div class="titleRow"><div style="font-size:20px">🛠️</div><h3>Admin (Dueño)</h3></div>
+        <div class="muted">UID: <b>${escapeHtml(uid)}</b></div>
+        <div class="muted">Limpieza diaria: OK.</div>
+        <div style="margin-top:12px">
+          <button id="btnPending" class="btn" style="width:100%">Ver pendientes de autorización</button>
         </div>
+        <div id="pendingRes" style="margin-top:10px"></div>
+      </div>
       ` : ""}
 
       <div class="card">
-        <div class="cardTitle">🔎 Buscar por patente</div>
+        <div class="titleRow"><div style="font-size:20px">🔎</div><h3>Buscar por patente</h3></div>
 
         <label>Patente</label>
         <input id="searchPlate" placeholder="Ej: KHDC46" />
 
-        <button class="btn" id="btnSearch">Buscar</button>
+        <div style="margin-top:12px">
+          <button id="btnSearch" class="btn" style="width:100%">Buscar</button>
+        </div>
 
-        <div id="searchRes" class="small" style="margin-top:10px;"></div>
+        <div id="searchRes" style="margin-top:12px"></div>
       </div>
 
       <div class="card">
-        <div class="cardTitle">📍 Check-in (hoy)</div>
+        <div class="titleRow"><div style="font-size:20px">📍</div><h3>Check-in (hoy)</h3></div>
 
         <div class="row">
           <div>
             <label>Mi patente</label>
-            <input id="myPlate" placeholder="Ej: KHDC46" value="${escapeHtml((profile?.plates?.[0] || ""))}" />
+            <input id="myPlate" placeholder="Ej: KHDC46" value="${escapeHtml(myPlates[0] || "")}" />
           </div>
           <div>
             <label>Mi sector hoy</label>
-            <input id="mySectorToday" placeholder="Ej: Farmacia" value="${escapeHtml((myToday?.sectorToday || profile?.sector || ""))}" />
+            <input id="mySectorToday" placeholder="Ej: Dental" value="${escapeHtml(mySector || "")}" />
           </div>
         </div>
 
-        <button class="btn" id="btnCheckin">Hacer check-in</button>
-        <div id="checkinRes" class="small" style="margin-top:10px;"></div>
-
-        <div class="mini" style="margin-top:8px;">
-          * El check-in es <b>solo por hoy</b> (${today}). Mañana partes en blanco.
+        <div style="margin-top:12px">
+          <button id="btnCheckin" class="btn" style="width:100%">Hacer check-in</button>
         </div>
+
+        <div id="checkinRes" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
-        <div class="cardTitle">🚗 Estoy bloqueando (hoy)</div>
+        <div class="titleRow"><div style="font-size:20px">🚗</div><h3>Estoy bloqueando (hoy)</h3></div>
 
         <div class="row">
           <div>
             <label>Mi patente (quien bloquea)</label>
-            <input id="blockerPlate" placeholder="Ej: KHDC46" value="${escapeHtml((profile?.plates?.[0] || ""))}" />
+            <input id="blockerPlate" placeholder="Ej: KHDC46" value="${escapeHtml(myPlates[0] || "")}" />
           </div>
           <div>
             <label>Patente bloqueada</label>
@@ -840,275 +755,304 @@ async function renderActiveApp(user, profile) {
           </div>
         </div>
 
-        <div class="btnRow">
-          <button class="btn" id="btnAddBlock">Agregar bloqueo</button>
-          <button class="btn secondary" id="btnListBlocks">Ver bloqueos de hoy</button>
+        <div class="row" style="margin-top:12px">
+          <button id="btnAddBlock" class="btn">Agregar</button>
+          <button id="btnListBlocks" class="btn secondary">Ver hoy</button>
         </div>
 
-        <div id="blocksRes" class="small" style="margin-top:10px;"></div>
+        <div id="blocksRes" style="margin-top:10px"></div>
       </div>
 
       <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
     </div>
-  `);
+  `;
 
-  // Logout
-  $("btnLogout").onclick = () => signOut(auth);
+  el("btnLogout").onclick = () => signOut(auth);
 
-  // Admin panel
-  if (isOwner) {
-    $("btnAdmin").onclick = async () => {
-      $("adminBox").textContent = "Cargando pendientes...";
+  // Admin pendientes
+  if (isOwner(user)) {
+    el("btnPending").onclick = async () => {
+      const out = el("pendingRes");
+      out.innerHTML = `<div class="muted">Cargando…</div>`;
       try {
-        const qy = query(collection(db, COL_USERS), where("status", "==", "pending"));
-        const snap = await getDocs(qy);
+        // Pending por status
+        const qy1 = query(collection(db, COL_USERS), where("status", "==", "pending"));
+        const s1 = await getDocs(qy1);
 
-        if (snap.empty) {
-          $("adminBox").innerHTML = `<span class="ok">✅ No hay usuarios pendientes.</span>`;
+        // Pending por estado (compat)
+        const qy2 = query(collection(db, COL_USERS), where("estado", "==", "pendiente"));
+        const s2 = await getDocs(qy2);
+
+        const map = new Map();
+        s1.forEach(d => map.set(d.id, { id: d.id, ...d.data() }));
+        s2.forEach(d => map.set(d.id, { id: d.id, ...d.data() }));
+
+        const list = [...map.values()].filter(u => isUserPending(u));
+
+        if (!list.length) {
+          out.innerHTML = `<div class="badge ok">✅ No hay usuarios pendientes.</div>`;
           return;
         }
 
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        $("adminBox").innerHTML = `
-          <div class="small">Pendientes (${rows.length}):</div>
-          ${rows.map(u => `
-            <div class="card" style="margin:10px 0;padding:12px;border-radius:14px;">
-              <div><b>${escapeHtml(u.name || "(sin nombre)")}</b></div>
-              <div class="mini">Email: ${escapeHtml(u.email || u.id)}</div>
-              <div class="mini">Sector: ${escapeHtml(u.sector || "")}</div>
-              <div class="mini">Patentes: ${(u.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
-              <div class="btnRow" style="margin-top:10px;">
-                <button class="btn" data-approve="${escapeHtml(u.id)}">Aprobar</button>
-                <button class="btn secondary" data-reject="${escapeHtml(u.id)}">Rechazar</button>
-              </div>
+        out.innerHTML = `
+          <div class="muted" style="margin-bottom:8px">Pendientes (${list.length})</div>
+          ${list.map(u => `
+            <div class="card" style="box-shadow:none;margin:10px 0">
+              <div style="font-weight:900">${escapeHtml(u.name || "(sin nombre)")}</div>
+              <div class="muted">${escapeHtml(u.email || u.id)}</div>
+              <div class="muted">🏥 ${escapeHtml(u.sector || u.unit || "(sin sector)")}</div>
+              <div class="muted">🚗 ${(u.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
+              <button class="btn" data-approve="${escapeHtml(u.id)}" style="width:100%;margin-top:10px">
+                Aprobar
+              </button>
             </div>
           `).join("")}
         `;
 
-        // wire buttons
         document.querySelectorAll("[data-approve]").forEach(btn => {
-          btn.addEventListener("click", async () => {
+          btn.onclick = async () => {
             const id = btn.getAttribute("data-approve");
+            btn.disabled = true;
+            btn.textContent = "Aprobando…";
             try {
-              await updateDoc(doc(db, COL_USERS, id), { status:"active", updatedAt: serverTimestamp() });
-              $("adminBox").innerHTML = `<span class="ok">✅ Aprobado: ${escapeHtml(id)}</span>`;
+              await updateDoc(doc(db, COL_USERS, id), {
+                status: "active",
+                estado: "activo",
+                updatedAt: serverTimestamp(),
+                approvedBy: uid,
+                approvedAt: serverTimestamp()
+              });
+              btn.textContent = "✅ Aprobado";
             } catch (e) {
               console.error(e);
-              $("adminBox").innerHTML = `<span class="bad">❌ No pude aprobar (revisa Rules).</span>`;
+              btn.disabled = false;
+              btn.textContent = "❌ Error (revisa Rules)";
             }
-          });
+          };
         });
-        document.querySelectorAll("[data-reject]").forEach(btn => {
-          btn.addEventListener("click", async () => {
-            const id = btn.getAttribute("data-reject");
-            try {
-              await updateDoc(doc(db, COL_USERS, id), { status:"rejected", updatedAt: serverTimestamp() });
-              $("adminBox").innerHTML = `<span class="ok">✅ Rechazado: ${escapeHtml(id)}</span>`;
-            } catch (e) {
-              console.error(e);
-              $("adminBox").innerHTML = `<span class="bad">❌ No pude rechazar (revisa Rules).</span>`;
-            }
-          });
-        });
-
       } catch (e) {
         console.error(e);
-        $("adminBox").innerHTML = `<span class="bad">❌ Error cargando pendientes.</span>`;
+        out.innerHTML = `<div class="badge warn">❌ Error cargando (Rules).</div>`;
       }
     };
   }
 
-  // Buscar patente: muestra habitual + checkin hoy si difiere
-  $("btnSearch").onclick = async () => {
-    const plate = normPlate($("searchPlate").value);
-    $("searchRes").textContent = "Buscando...";
+  // Buscar patente
+  el("btnSearch").onclick = async () => {
+    const plate = normPlate(el("searchPlate").value);
+    const out = el("searchRes");
     if (!plate) {
-      $("searchRes").innerHTML = `<span class="warn">⚠️ Escribe una patente.</span>`;
+      out.innerHTML = `<div class="badge warn">⚠️ Escribe una patente.</div>`;
       return;
     }
+    out.innerHTML = `<div class="muted">Buscando…</div>`;
 
     try {
       const found = await findUserByPlate(plate);
-      if (!found || found.status !== "active") {
-        $("searchRes").innerHTML = `<span class="warn">⚠️ No encontré esa patente (o el usuario no está autorizado).</span>`;
+
+      // Si no existe o no está activo => “no autorizado”
+      if (!found || !isUserActive(found)) {
+        out.innerHTML = `<div class="badge warn">⚠️ No encontré esa patente (o el usuario no está autorizado).</div>`;
         return;
       }
 
       const name = found.name || "(sin nombre)";
-      const phone = found.phone || "(sin teléfono)";
-      const sectorHabitual = found.sector || "(sin sector)";
-      const theirUid = found.uid;
+      const phone = found.phone || "";
+      const habitual = found.sector || found.unit || "(sin sector)";
+      const plates = Array.isArray(found.plates) ? found.plates : [];
+      const foundUid = found.uid || null;
 
-      // check-in hoy del dueño de esa patente
-      let todayCheck = null;
-      try { todayCheck = await getTodayCheckinByUid(theirUid); } catch {}
+      // Check-in de hoy del dueño de esa patente
+      let todayCI = null;
+      if (foundUid) todayCI = await getTodayCheckinByUid(foundUid);
 
-      const sectorToday = todayCheck?.sectorToday || "";
-      const showToday = sectorToday && sectorToday !== sectorHabitual;
+      const sectorHoy = (todayCI?.sectorToday || todayCI?.unitToday || "").trim();
+      const showHoy = sectorHoy && sectorHoy.toLowerCase() !== String(habitual).toLowerCase();
 
       const msg = `Hola ${name}. Te contacto por Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
-      const wa = (!phone || String(phone).includes("sin")) ? null : whatsappLink(phone, msg);
+      const wa = whatsappLink(phone, msg);
 
-      $("searchRes").innerHTML = `
-        <div><b>${escapeHtml(name)}</b></div>
-        <div>📞 ${escapeHtml(phone)}</div>
-        <div>🏥 Sector habitual: <b>${escapeHtml(sectorHabitual)}</b></div>
-        ${showToday ? `<div class="ok">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorToday)}</b></div>` : (sectorToday ? `<div class="small">📍 Check-in hoy: ${escapeHtml(sectorToday)}</div>` : `<div class="small muted">Sin check-in hoy.</div>`)}
-        <div class="muted" style="margin-top:6px;">
-          Patentes: ${(found.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}
+      out.innerHTML = `
+        <div style="font-weight:900;font-size:20px">${escapeHtml(name)}</div>
+        <div class="muted" style="margin-top:4px">📞 ${escapeHtml(phone || "(sin teléfono)")}</div>
+
+        <div class="muted" style="margin-top:4px">
+          🏥 Habitual: <b>${escapeHtml(habitual)}</b>
         </div>
-        ${wa ? `<a href="${wa}" target="_blank"><button class="btn" style="margin-top:10px;">📲 Enviar WhatsApp</button></a>`
-             : `<div class="warn" style="margin-top:10px;">⚠️ No puedo armar WhatsApp (falta teléfono).</div>`
+
+        ${
+          showHoy
+            ? `<div class="badge warn" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
+            : sectorHoy
+              ? `<div class="badge ok" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
+              : `<div class="badge" style="margin-top:10px">📍 Hoy: sin check-in</div>`
+        }
+
+        <div class="muted" style="margin-top:10px">
+          Patentes registradas:
+          <div>${plates.map(p => `<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
+        </div>
+
+        ${
+          wa
+            ? `<a href="${wa}" target="_blank" style="text-decoration:none">
+                 <button class="btn" style="width:100%;margin-top:12px">📲 Enviar WhatsApp</button>
+               </a>`
+            : `<div class="badge warn" style="margin-top:12px">⚠️ No puedo armar WhatsApp: falta teléfono.</div>`
         }
       `;
     } catch (e) {
       console.error(e);
-      $("searchRes").innerHTML = `<span class="bad">❌ Error buscando. Revisa consola.</span>`;
+      out.innerHTML = `<div class="badge warn">❌ Error buscando (revisa Console/Rules).</div>`;
     }
   };
 
-  // Check-in
-  $("btnCheckin").onclick = async () => {
-    const plate = normPlate($("myPlate").value);
-    const sectorToday = ($("mySectorToday").value || "").trim();
-    $("checkinRes").textContent = "Guardando check-in...";
+  // Check-in (hoy)
+  el("btnCheckin").onclick = async () => {
+    const plate = normPlate(el("myPlate").value);
+    const sectorToday = String(el("mySectorToday").value || "").trim();
+    const out = el("checkinRes");
 
     if (!plate || !sectorToday) {
-      $("checkinRes").innerHTML = `<span class="warn">⚠️ Falta patente o sector hoy.</span>`;
+      out.innerHTML = `<div class="badge warn">⚠️ Falta patente o sector.</div>`;
       return;
     }
 
-    try {
-      // 1) Guarda checkin (docId estable por usuario+fecha)
-      const id = `${uid}_${today}`;
-      await setDoc(doc(db, COL_CHECKINS, id), {
-        uid,
-        email: normEmail(email),
-        plate,
-        sectorToday, // 👈 HOY
-        date: today,
-        ts: serverTimestamp()
-      }, { merge: true });
+    out.innerHTML = `<div class="muted">Guardando…</div>`;
 
-      // 2) Mensaje OK
-      $("checkinRes").innerHTML = `<span class="ok">✅ Check-in OK: ${escapeHtml(plate)} · ${escapeHtml(sectorToday)}</span>`;
+    try {
+      const id = `${uid}_${todayStr()}`;
+      await setDoc(
+        doc(db, COL_CHECKINS, id),
+        {
+          uid,
+          email,
+          plate,
+          date: todayStr(),
+          sectorToday,          // ✅ nuevo campo real
+          unitToday: sectorToday, // compat
+          ts: serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      // Mostrar siempre el checkin guardado (no el “habitual”)
+      out.innerHTML = `<div class="badge ok">✅ Check-in OK: <b>${escapeHtml(plate)}</b> · <b>${escapeHtml(sectorToday)}</b></div>`;
     } catch (e) {
       console.error(e);
-      $("checkinRes").innerHTML = `<span class="bad">❌ No pude guardar check-in. Revisa Rules.</span>`;
+      out.innerHTML = `<div class="badge warn">❌ No pude guardar check-in (Rules).</div>`;
     }
   };
 
-  // Bloqueos
-  $("btnAddBlock").onclick = async () => {
-    const blockerPlate = normPlate($("blockerPlate").value);
-    const blockedPlate = normPlate($("blockedPlate").value);
+  // Agregar bloqueo
+  el("btnAddBlock").onclick = async () => {
+    const blockerPlate = normPlate(el("blockerPlate").value);
+    const blockedPlate = normPlate(el("blockedPlate").value);
+    const out = el("blocksRes");
 
-    $("blocksRes").textContent = "Guardando bloqueo...";
     if (!blockerPlate || !blockedPlate) {
-      $("blocksRes").innerHTML = `<span class="warn">⚠️ Falta mi patente o la bloqueada.</span>`;
+      out.innerHTML = `<div class="badge warn">⚠️ Falta mi patente o la bloqueada.</div>`;
       return;
     }
+
+    out.innerHTML = `<div class="muted">Guardando…</div>`;
 
     try {
       await addDoc(collection(db, COL_BLOCKS), {
         blockerUid: uid,
-        blockerEmail: normEmail(email),
+        blockerEmail: email,
         blockerPlate,
         blockedPlate,
-        date: today,
+        date: todayStr(),
         ts: serverTimestamp()
       });
 
-      $("blocksRes").innerHTML = `<span class="ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → ${escapeHtml(blockedPlate)}</span>`;
-      $("blockedPlate").value = "";
+      out.innerHTML = `<div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>`;
+      el("blockedPlate").value = "";
     } catch (e) {
       console.error(e);
-      $("blocksRes").innerHTML = `<span class="bad">❌ No pude guardar bloqueo. Revisa Rules.</span>`;
+      out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
     }
   };
 
-  $("btnListBlocks").onclick = async () => {
-    $("blocksRes").textContent = "Cargando bloqueos de hoy...";
+  // Ver bloqueos de hoy
+  el("btnListBlocks").onclick = async () => {
+    const out = el("blocksRes");
+    out.innerHTML = `<div class="muted">Cargando…</div>`;
     try {
       const qy = query(
         collection(db, COL_BLOCKS),
         where("blockerUid", "==", uid),
-        where("date", "==", today)
+        where("date", "==", todayStr())
       );
       const snap = await getDocs(qy);
 
       if (snap.empty) {
-        $("blocksRes").innerHTML = `<span class="muted">No tienes bloqueos hoy.</span>`;
+        out.innerHTML = `<div class="muted">No tienes bloqueos hoy.</div>`;
         return;
       }
 
-      const items = snap.docs.map(d => d.data());
-      $("blocksRes").innerHTML = `
-        <div class="muted">Bloqueos hoy (${today}):</div>
+      const items = snap.docs.map((d) => d.data());
+      out.innerHTML = `
+        <div class="muted">Bloqueos hoy (${todayStr()}):</div>
         ${items.map(it => `<div class="pill">${escapeHtml(it.blockerPlate)} → <b>${escapeHtml(it.blockedPlate)}</b></div>`).join("")}
-        <div class="muted" style="margin-top:10px;">Tip: usa “Buscar por patente” para avisar por WhatsApp.</div>
       `;
     } catch (e) {
       console.error(e);
-      $("blocksRes").innerHTML = `<span class="bad">❌ Error listando bloqueos.</span>`;
+      out.innerHTML = `<div class="badge warn">❌ Error listando (Rules).</div>`;
     }
   };
 }
 
-// ==============================
-// App entry
-// ==============================
-
-function renderLanding() {
-  renderToApp(landingHtml());
-  wireLandingHandlers();
-}
-
+/** =========================
+ *  START
+ *  ========================= */
 injectStyles();
-renderLanding();
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
-    renderLanding();
+    renderLanding({ defaultTab: "login" });
     return;
   }
 
-  const email = normEmail(user.email || "");
-  if (!email) {
-    renderLanding();
-    return;
+  // Si no es visita, revisa autorización antes de “dejar usar”
+  if (!user.isAnonymous) {
+    const profile = await getMyProfile(user.email);
+    if (!profile) {
+      // No hay doc: lo dejamos igual entrar, pero avisará en búsqueda/otros.
+      await renderApp(user);
+      return;
+    }
+
+    if (!isUserActive(profile)) {
+      // Pendiente de aprobación => pantalla bloqueada (pero con botón cerrar sesión)
+      document.body.innerHTML = `
+        <div class="wrap">
+          <div class="topbar">
+            <div class="pillUser">👤 ${escapeHtml(normEmail(user.email || ""))}</div>
+            <button id="btnLogout" class="btn secondary">Cerrar sesión</button>
+          </div>
+
+          <div class="hero">
+            <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
+            <h1>Estacionamiento<br/>CESFAM</h1>
+            <div class="subtitle">Karol Wojtyla - Puente Alto</div>
+          </div>
+
+          <div class="card">
+            <div class="badge warn">⏳ Tu cuenta está pendiente de autorización.</div>
+            <div class="muted" style="margin-top:10px">
+              Cuando el dueño la apruebe, podrás usar la app.
+            </div>
+          </div>
+
+          <div class="footer">CESFAM Karol Wojtyla - Puente Alto, Chile</div>
+        </div>
+      `;
+      el("btnLogout").onclick = () => signOut(auth);
+      return;
+    }
   }
 
-  // Leer perfil
-  let profile = null;
-  try { profile = await getMyProfileByEmail(email); } catch {}
-
-  // Si no existe perfil, créalo como pendiente
-  if (!profile) {
-    try {
-      await setDoc(doc(db, COL_USERS, email), {
-        uid: user.uid,
-        email,
-        status: "pending",
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        source: "auto_profile"
-      }, { merge: true });
-    } catch {}
-    profile = { status: "pending" };
-  }
-
-  // Gate por status
-  if (OWNER_UIDS.has(user.uid)) {
-    await renderActiveApp(user, profile);
-    return;
-  }
-
-  const status = profile.status || "pending";
-  if (status !== "active") {
-    renderPending(user, profile);
-    return;
-  }
-
-  await renderActiveApp(user, profile);
+  await renderApp(user);
 });
