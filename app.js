@@ -955,13 +955,35 @@ el("btnAddBlock").onclick = async () => {
     return;
   }
 
-  out.innerHTML = `<div class="muted">Guardando bloqueo y buscando dueño...</div>`;
+  out.innerHTML = `<div class="muted">Guardando bloqueo y buscando datos...</div>`;
 
   try {
+    // --- PASO CLAVE: OBTENER TU NOMBRE REAL AHORA MISMO ---
+    let myName = "Un colega del CESFAM"; // Valor por defecto
+    
+    // 1. Intentamos leer del perfil cargado en memoria (si existe)
+    if (typeof myProfile !== 'undefined' && myProfile?.name) {
+      myName = myProfile.name;
+    } 
+    // 2. Si falló, intentamos leer directo del Auth de Firebase
+    else if (user.displayName) {
+       myName = user.displayName;
+    }
+    // 3. (OPCIONAL DE SEGURIDAD) Si sigue siendo genérico, hacemos una búsqueda rápida en DB
+    // Esto asegura que si tienes nombre en la base de datos, lo usemos sí o sí.
+    if (myName === "Un colega del CESFAM" && !user.isAnonymous) {
+       const freshProfile = await getMyProfile(user.email);
+       if (freshProfile?.name) {
+          myName = freshProfile.name;
+       }
+    }
+    // -------------------------------------------------------
+
     // 1) Guardar el registro del bloqueo en Firestore
     await addDoc(collection(db, COL_BLOCKS), {
       blockerUid: uid,
       blockerEmail: email,
+      blockerName: myName, // Guardamos también tu nombre en el historial
       blockerPlate,
       blockedPlate,
       date: todayStr(),
@@ -969,11 +991,10 @@ el("btnAddBlock").onclick = async () => {
     });
 
     // 2) Buscar dueño del vehículo bloqueado
-    // Usamos COL_USERS para consistencia
     const qy = query(collection(db, COL_USERS), where("plates", "array-contains", blockedPlate));
     const snap = await getDocs(qy);
 
-    // CASO A: No encontramos al dueño de la patente bloqueada
+    // CASO A: No encontramos al dueño
     if (snap.empty) {
       out.innerHTML = `
         <div class="badge ok">✅ Bloqueo registrado.</div>
@@ -982,7 +1003,7 @@ el("btnAddBlock").onclick = async () => {
            🚫 Bloqueas a: <b>${escapeHtml(blockedPlate)}</b>
         </div>
         <div class="badge warn" style="margin-top:8px;">
-          ⚠️ Esa patente no está registrada en la App, no puedo enviar WhatsApp.
+          ⚠️ Esa patente no está registrada, no puedo enviar WhatsApp.
         </div>
       `;
       el("blockedPlate").value = "";
@@ -991,18 +1012,14 @@ el("btnAddBlock").onclick = async () => {
 
     // CASO B: Encontramos al dueño
     const targetUser = snap.docs[0].data();
-    const targetName = targetUser.name || "Colega"; // Nombre del dueño del auto bloqueado
+    const targetName = targetUser.name || "Colega"; 
     const targetPhone = targetUser.phone || "";
     const targetSector = targetUser.sector || targetUser.unit || "(sin sector)";
 
-    // --- CORRECCIÓN AQUÍ ---
-    // Obtenemos TU nombre desde el perfil cargado (myProfile) o el Auth (user.displayName)
-    const myName = myProfile?.name || user.displayName || "Un colega del CESFAM";
-
-    // Mensaje para WhatsApp
+    // Mensaje para WhatsApp con TU NOMBRE REAL
     const msg = `Hola ${targetName}. Soy ${myName}. Te contacto por la App de Estacionamiento: estoy bloqueando tu vehículo (${blockedPlate}). Avísame si necesitas salir.`;
 
-    // Formatear teléfono usando tu helper
+    // Formatear teléfono
     const cleanPhone = formatPhoneChile(targetPhone);
     
     // Armar Link
@@ -1011,9 +1028,8 @@ el("btnAddBlock").onclick = async () => {
       waLink = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
     }
 
-    // 3) Renderizar resultado en pantalla
+    // 3) Renderizar resultado
     let htmlBotones = "";
-    
     if (waLink) {
       htmlBotones = `
         <a href="${waLink}" target="_blank" style="text-decoration:none;">
@@ -1022,24 +1038,21 @@ el("btnAddBlock").onclick = async () => {
           </button>
         </a>
       `;
-      // Intentar abrir automáticamente (puede ser bloqueado por el navegador si tarda mucho)
       window.open(waLink, "_blank");
     } else {
-      htmlBotones = `<div class="badge warn" style="margin-top:10px">⚠️ El usuario no tiene teléfono válido registrado.</div>`;
+      htmlBotones = `<div class="badge warn" style="margin-top:10px">⚠️ El usuario no tiene teléfono válido.</div>`;
     }
 
     out.innerHTML = `
       <div class="badge ok">✅ Bloqueo registrado y notificado.</div>
       <div class="card" style="margin-top:10px; padding:10px; background:#f8fafc;">
-        <div style="font-weight:bold; color:#334155;">Datos del vehículo bloqueado:</div>
+        <div style="font-weight:bold; color:#334155;">Vehículo bloqueado:</div>
         <div>👤 ${escapeHtml(targetName)}</div>
         <div>🏥 ${escapeHtml(targetSector)}</div>
-        <div>📞 ${escapeHtml(targetPhone)}</div>
         ${htmlBotones}
       </div>
     `;
 
-    // Limpiar input
     el("blockedPlate").value = "";
 
   } catch (e) {
@@ -1047,7 +1060,6 @@ el("btnAddBlock").onclick = async () => {
     out.innerHTML = `<div class="badge warn">❌ Error al guardar (Revisa consola).</div>`;
   }
 };
-
   // Ver bloqueos de hoy
   el("btnListBlocks").onclick = async () => {
     const out = el("blocksRes");
