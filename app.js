@@ -308,6 +308,47 @@ async function cleanupOldCheckinsForMe(uid) {
   }
 }
 
+async function getProfileByUid(uid) {
+  if (!uid) return null;
+  const qy = query(collection(db, COL_USERS), where("uid", "==", uid));
+  const snap = await getDocs(qy);
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  return { id: d.id, ...d.data() };
+}
+
+function pickNameFromProfile(p) {
+  return (
+    p?.name ||
+    p?.nombre ||
+    p?.fullName ||
+    p?.displayName ||
+    p?.username ||
+    ""
+  ).trim();
+}
+
+async function resolveMyName({ user, myProfile }) {
+  // 1) Perfil ya cargado en renderApp
+  const fromProfile = pickNameFromProfile(myProfile);
+  if (fromProfile) return fromProfile;
+
+  // 2) Auth displayName
+  const fromAuth = String(user?.displayName || "").trim();
+  if (fromAuth) return fromAuth;
+
+  // 3) Buscar por UID en Firestore (más estable que email)
+  if (!user?.isAnonymous) {
+    const pByUid = await getProfileByUid(user.uid);
+    const fromUidProfile = pickNameFromProfile(pByUid);
+    if (fromUidProfile) return fromUidProfile;
+  }
+
+  // 4) Fallback
+  return "Un coleguita del CESFAM";
+}
+
+
 /** =========================
  *  RENDER: LANDING (Login/Create)
  *  ========================= */
@@ -959,7 +1000,8 @@ el("btnAddBlock").onclick = async () => {
 
   try {
     // --- PASO CLAVE: OBTENER TU NOMBRE REAL AHORA MISMO ---
-    let myName = "Un colega del CESFAM"; // Valor por defecto
+    const liveUser = auth.currentUser; // ✅ usa el usuario actual real
+    const myName = await resolveMyName({ user: liveUser, myProfile });
     
     // 1. Intentamos leer del perfil cargado en memoria (si existe)
     if (typeof myProfile !== 'undefined' && myProfile?.name) {
