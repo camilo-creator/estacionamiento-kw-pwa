@@ -1,11 +1,11 @@
 // app.js — Estacionamiento CESFAM (GitHub Pages + Firebase CDN)
-// ✅ Login / Registro (wizard 3 pasos) + Aprobación por dueño (OWNER_UIDS)
-// ✅ Perfil en Firestore: /users/{uid} (doc id = uid) create-only (usuario no edita)
-// ✅ Búsqueda por patente (sector habitual + check-in de hoy si distinto)
-// ✅ Check-in diario (guarda por uid_YYYY-MM-DD)
-// ✅ Bloqueo + WhatsApp al bloqueado
+// ✅ Login + Wizard Registro (3 pasos) + Perfil en /users/{uid} (create-only)
+// ✅ Si el email ya existe en Auth, al hacer login: si no hay perfil Firestore, obliga a completar registro
+// ✅ Aprobación por dueño (OWNER_UIDS) => status/estado pasa a active/activo
+// ✅ Búsqueda por patente + WhatsApp
+// ✅ Check-in diario uid_YYYY-MM-DD
+// ✅ Bloqueos + WhatsApp automático
 
-// Firebase SDKs desde CDN (GitHub Pages compatible)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import {
   getAuth,
@@ -44,10 +44,8 @@ const firebaseConfig = {
   appId: "1:474380177810:web:9448efb41c8682e8a4714b"
 };
 
-// 🔐 Pon aquí tu UID (dueño)
 const OWNER_UIDS = ["hnRLNmTe5uguxYWFNufET3YnGQL2"];
 
-// Colecciones
 const COL_USERS = "users";
 const COL_CHECKINS = "checkins";
 const COL_BLOCKS = "blocks";
@@ -90,7 +88,7 @@ const escapeHtml = (s) =>
 
 const isOwner = (user) => !!user && OWNER_UIDS.includes(user.uid);
 
-// ✅ Compatibilidad: algunos docs vienen con `estado:"activo"` y otros con `status:"active"`
+// compat status/estado
 function isUserActive(u) {
   const s = String(u?.status || "").toLowerCase();
   const e = String(u?.estado || "").toLowerCase();
@@ -109,7 +107,6 @@ function formatPhoneChile(phone) {
   if (p.length === 9 && p.startsWith("9")) return "56" + p;
   return p;
 }
-
 function whatsappLink(phone, msg) {
   const p = formatPhoneChile(phone);
   if (!p) return null;
@@ -307,7 +304,7 @@ async function getTodayCheckinByUid(uid) {
 }
 
 /** =========================
- *  RENDER: LANDING (Login/Create)
+ *  RENDER: LANDING
  *  ========================= */
 function renderLanding({ defaultTab = "login" } = {}) {
   const tabLogin = defaultTab === "login";
@@ -370,6 +367,7 @@ function renderLanding({ defaultTab = "login" } = {}) {
 
   el("btnRegFuncionario").onclick = () => renderRegisterWizard();
   el("btnForgot").onclick = () => renderForgotPassword();
+
   el("btnVisitor").onclick = async () => {
     el("msg").textContent = "Entrando como visita…";
     try {
@@ -410,8 +408,24 @@ function wireLoginCreate(isLoginTab) {
     const email = normEmail(el("email").value);
     const pass = el("pass").value;
     el("msg").textContent = "Iniciando sesión…";
+
     try {
       await signInWithEmailAndPassword(auth, email, pass);
+
+      // ✅ Si Auth existe pero NO hay perfil /users/{uid} => obliga a completar registro
+      const u = auth.currentUser;
+      if (u && !u.isAnonymous) {
+        const prof = await getMyProfileByUid(u.uid);
+        if (!prof) {
+          renderRegisterWizard({
+            step: 2,         // saltamos a datos personales
+            email,
+            pass,
+            name: u.displayName || "",
+            plates: [""]
+          });
+        }
+      }
     } catch (e) {
       console.error(e);
       el("msg").innerHTML = `<span class="warn">❌ Email/clave incorrectos o Auth no habilitado.</span>`;
@@ -511,12 +525,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
   ).join("");
 
   const options = SECTORES
-    .map(
-      (s) =>
-        `<option value="${escapeHtml(s)}" ${
-          state.sector === s ? "selected" : ""
-        }>${escapeHtml(s)}</option>`
-    )
+    .map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`)
     .join("");
 
   const step3 = `
@@ -535,9 +544,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     </select>
 
     <label style="margin-top:14px;display:flex;gap:10px;align-items:flex-start">
-      <input id="rTerms" type="checkbox" style="width:auto;margin-top:3px" ${
-        state.terms ? "checked" : ""
-      }/>
+      <input id="rTerms" type="checkbox" style="width:auto;margin-top:3px" ${state.terms ? "checked" : ""}/>
       <span>
         Acepto los <a href="#" id="termsLink">Términos y Condiciones</a><br/>
         <span class="muted" style="font-size:12px">Conforme a la Ley 19.628 sobre protección de la vida privada</span>
@@ -570,7 +577,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     </div>
   `;
 
-  // Wire common
+  // Paso 1
   if (step === 1) {
     el("btnBack").onclick = () => renderLanding({ defaultTab: "login" });
     el("btnNext").onclick = () => {
@@ -586,6 +593,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     };
   }
 
+  // Paso 2
   if (step === 2) {
     el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 1 });
     el("btnNext").onclick = () => {
@@ -597,6 +605,7 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     };
   }
 
+  // Paso 3
   if (step === 3) {
     el("btnHome").onclick = () => renderLanding({ defaultTab: "login" });
 
@@ -608,12 +617,12 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
 
     el("termsLink").onclick = (ev) => {
       ev.preventDefault();
-      alert("Términos y Condiciones (pendiente): se recomienda enlazar a un PDF o página oficial.");
+      alert("Términos y Condiciones: enlaza a un PDF o página oficial cuando lo tengas.");
     };
 
     el("btnPrev").onclick = () => renderRegisterWizard({ ...state, step: 2 });
 
-    // ✅ FINISH: crea cuenta + crea doc /users/{uid} (sin merge) + muestra error real
+    // ✅ FINISH: crea Auth solo si NO estás logueado; crea doc /users/{uid} (sin merge) + error real
     el("btnFinish").onclick = async () => {
       const plates = readPlatesFromInputs().map(normPlate).filter(Boolean);
       const sector = String(el("rSector").value || "").trim();
@@ -623,20 +632,23 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
       if (!sector) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Selecciona tu unidad/sector.</span>`);
       if (!terms) return (el("rMsg").innerHTML = `<span class="warn">⚠️ Debes aceptar los términos.</span>`);
 
-      el("rMsg").textContent = "Creando cuenta…";
+      el("rMsg").textContent = "Creando cuenta / perfil…";
 
       try {
         const email = state.email;
         const pass = state.pass;
 
-        // 1) Crear usuario en Auth
-        const cred = await createUserWithEmailAndPassword(auth, email, pass);
-        const user = cred.user;
+        // 1) Si ya estoy logueado (vengo desde login), NO creo Auth
+        let user = auth.currentUser;
 
-        // Nombre visible (opcional)
-        try { await updateProfile(user, { displayName: state.name }); } catch {}
+        // Si no estoy logueado, creo Auth
+        if (!user) {
+          const cred = await createUserWithEmailAndPassword(auth, email, pass);
+          user = cred.user;
+          try { await updateProfile(user, { displayName: state.name }); } catch {}
+        }
 
-        // 2) Crear perfil en Firestore (docId = uid) — create-only
+        // 2) Crear perfil Firestore (docId = uid) — create-only (Rules)
         const profile = {
           uid: user.uid,
           email: normEmail(email),
@@ -656,13 +668,13 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
 
         await setDoc(doc(db, COL_USERS, user.uid), profile); // ✅ sin merge
 
-        el("rMsg").innerHTML = `<span class="ok">✅ Cuenta creada. Queda pendiente de autorización del dueño.</span>`;
+        el("rMsg").innerHTML = `<span class="ok">✅ Registro completado. Quedas pendiente de autorización del dueño.</span>`;
       } catch (e) {
         console.error(e);
         const code = e?.code || "";
         const msg = e?.message || "";
 
-        let nice = "❌ No pude crear la cuenta.";
+        let nice = "❌ No pude crear la cuenta / perfil.";
         if (code === "auth/email-already-in-use") nice = "❌ Ese correo ya existe. Usa 'Iniciar sesión' o 'Olvidé mi contraseña'.";
         else if (code === "auth/weak-password") nice = "❌ Contraseña muy débil. Usa mínimo 8 caracteres (ideal: letras + números).";
         else if (code === "auth/invalid-email") nice = "❌ Correo inválido. Revisa el formato.";
@@ -691,9 +703,7 @@ async function renderApp(user) {
   const email = normEmail(user.email || "");
   const uid = user.uid;
 
-  // Perfil (por UID)
   const myProfile = user.isAnonymous ? null : await getMyProfileByUid(uid);
-
   const mySector = myProfile?.sector || myProfile?.unit || "";
   const myPlates = Array.isArray(myProfile?.plates) ? myProfile.plates : [];
 
@@ -811,7 +821,7 @@ async function renderApp(user) {
           ${list.map(u => `
             <div class="card" style="box-shadow:none;margin:10px 0">
               <div style="font-weight:900">${escapeHtml(u.name || "(sin nombre)")}</div>
-              <div class="muted">${escapeHtml(u.email || "(sin email)")}</div>
+              <div class="muted">${escapeHtml(u.email || u.id)}</div>
               <div class="muted">🏥 ${escapeHtml(u.sector || u.unit || "(sin sector)")}</div>
               <div class="muted">🚗 ${(u.plates || []).map(p=>`<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
               <button class="btn" data-approve="${escapeHtml(u.id)}" style="width:100%;margin-top:10px">
@@ -917,7 +927,7 @@ async function renderApp(user) {
     }
   };
 
-  // Check-in (hoy)
+  // Check-in hoy
   el("btnCheckin").onclick = async () => {
     const plate = normPlate(el("myPlate").value);
     const sectorToday = String(el("mySectorToday").value || "").trim();
@@ -953,7 +963,7 @@ async function renderApp(user) {
     }
   };
 
-  // Agregar bloqueo + WhatsApp automático al bloqueado
+  // Bloqueo + WhatsApp
   el("btnAddBlock").onclick = async () => {
     const blockerPlate = normPlate(el("blockerPlate").value);
     const blockedPlate = normPlate(el("blockedPlate").value);
@@ -967,7 +977,6 @@ async function renderApp(user) {
     out.innerHTML = `<div class="muted">Guardando…</div>`;
 
     try {
-      // 1) Guardar bloqueo
       await addDoc(collection(db, COL_BLOCKS), {
         blockerUid: uid,
         blockerEmail: email,
@@ -977,14 +986,13 @@ async function renderApp(user) {
         ts: serverTimestamp()
       });
 
-      // 2) Buscar dueño del vehículo bloqueado en users (plates array-contains)
       const qy = query(collection(db, COL_USERS), where("plates", "array-contains", blockedPlate));
       const snap = await getDocs(qy);
 
       if (snap.empty) {
         out.innerHTML = `
           <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
-          <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)} (no está en users.plates).</div>
+          <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)}.</div>
         `;
         el("blockedPlate").value = "";
         return;
@@ -993,9 +1001,8 @@ async function renderApp(user) {
       const target = snap.docs[0].data();
       const name = target.name || "hola";
       const phone = target.phone || "";
-      const sector = target.sector || "";
+      const sector = target.sector || target.unit || "";
 
-      // 3) Armar WhatsApp
       const msg = `Hola ${name}. Soy Camilin. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contáctame si necesitas salir.`;
       const wa = whatsappLink(phone, msg);
 
@@ -1006,7 +1013,7 @@ async function renderApp(user) {
             <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
             <div>📞 ${escapeHtml(String(phone || "(sin teléfono)"))}</div>
             <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
-            <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp porque el teléfono está vacío o inválido.</div>
+            <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp (teléfono inválido).</div>
           </div>
         `;
         el("blockedPlate").value = "";
@@ -1025,9 +1032,7 @@ async function renderApp(user) {
         </div>
       `;
 
-      // Auto-abrir WhatsApp (si el navegador lo permite)
       window.open(wa, "_blank");
-
       el("blockedPlate").value = "";
     } catch (e) {
       console.error(e);
@@ -1035,7 +1040,7 @@ async function renderApp(user) {
     }
   };
 
-  // Ver bloqueos de hoy
+  // Ver bloqueos hoy
   el("btnListBlocks").onclick = async () => {
     const out = el("blocksRes");
     out.innerHTML = `<div class="muted">Cargando…</div>`;
@@ -1075,16 +1080,22 @@ onAuthStateChanged(auth, async (user) => {
     return;
   }
 
-  // Si no es visita, revisa autorización antes de “dejar usar”
   if (!user.isAnonymous) {
     const profile = await getMyProfileByUid(user.uid);
 
+    // Si Auth existe pero no hay doc => obliga completar registro
     if (!profile) {
-      // No hay doc: igual entra, pero probablemente es un usuario viejo o registro incompleto
-      await renderApp(user);
+      renderRegisterWizard({
+        step: 2,
+        email: normEmail(user.email || ""),
+        pass: "", // si viene desde login no lo necesitamos aquí
+        name: user.displayName || "",
+        plates: [""]
+      });
       return;
     }
 
+    // si está pendiente => bloqueado
     if (!isUserActive(profile)) {
       document.body.innerHTML = `
         <div class="wrap">
