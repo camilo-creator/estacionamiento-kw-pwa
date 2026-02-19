@@ -125,6 +125,13 @@ async function getGuestProfileByUid(uid) {
   return snap.exists() ? snap.data() : null;
 }
 
+function guestPhoneToCL(raw) {
+  // Usuario escribe SOLO 9 dígitos (ej: 912345678)
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length !== 9) return null;
+  if (!d.startsWith("9")) return null; // móvil típico
+  return "+56" + d;
+}
 function whatsappLink(phone, msg) {
   const p = formatPhoneChile(phone);
   if (!p) return null;
@@ -414,9 +421,8 @@ function renderLanding({ defaultTab = "login" } = {}) {
 
   el("btnForgot").onclick = () => renderForgotPassword();
 
-  el("btnVisitor").onclick = () => {
-    renderGuestRegisterWizard(); // ✅ ahora abre formulario de visita
-  };
+  el("btnVisitor").onclick = () => renderGuestRegister();
+
   
 }
 
@@ -737,25 +743,27 @@ function renderRegisterWizard(state = { step: 1, plates: [""] }) {
     }
   }
 }
-function renderGuestRegisterWizard(state = {}) {
+function renderGuestRegister(state = {}) {
+  const options = SECTORES.map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("");
+
   document.body.innerHTML = `
     <div class="wrap">
       <div class="hero">
         <img class="logo" src="./logo-cesfam.png" alt="CESFAM" />
-        <h1 style="font-size:28px">Ingreso como Visita</h1>
-        <div class="subtitle" style="font-size:16px">Registro rápido (válido por 1 día)</div>
+        <h1 style="font-size:28px">Registro de Visita</h1>
+        <div class="subtitle" style="font-size:16px">Estacionamiento CESFAM KW</div>
       </div>
 
       <div class="card">
-        <div class="titleRow"><div style="font-size:20px">👥</div><h3>Registro de Visita</h3></div>
-        <div class="muted">Completa estos datos para continuar.</div>
+        <div class="titleRow"><div style="font-size:20px">👥</div><h3>Visitante</h3></div>
+        <div class="muted">Completa estos datos para registrar tu presencia.</div>
 
         <label>Nombre</label>
         <input id="gName" placeholder="Ej: Juan Pérez" value="${escapeHtml(state.name || "")}" />
 
         <label>Teléfono (9 dígitos, sin +56)</label>
         <input id="gPhone" inputmode="numeric" placeholder="Ej: 912345678" value="${escapeHtml(state.phone || "")}" />
-        <div class="muted" style="font-size:12px;margin-top:6px">Guardaremos como <b>+56XXXXXXXXX</b>.</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">Se guardará como <b>+56XXXXXXXXX</b>.</div>
 
         <label>Patente</label>
         <input id="gPlate" placeholder="Ej: ABCD12" value="${escapeHtml(state.plate || "")}" />
@@ -763,12 +771,12 @@ function renderGuestRegisterWizard(state = {}) {
         <label>Sector / Unidad</label>
         <select id="gSector">
           <option value="">Selecciona tu unidad</option>
-          ${SECTORES.map(s => `<option value="${escapeHtml(s)}" ${state.sector === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}
+          ${options}
         </select>
 
         <div class="row" style="margin-top:14px">
           <button id="gBack" class="btn secondary">Volver</button>
-          <button id="gGo" class="btn">Continuar</button>
+          <button id="gSave" class="btn">Registrar visita</button>
         </div>
 
         <div id="gMsg" class="muted" style="margin-top:10px"></div>
@@ -780,55 +788,43 @@ function renderGuestRegisterWizard(state = {}) {
 
   el("gBack").onclick = () => renderLanding({ defaultTab: "login" });
 
-  el("gGo").onclick = async () => {
+  el("gSave").onclick = async () => {
     const name = String(el("gName").value || "").trim();
-    const phoneRaw = String(el("gPhone").value || "").trim();
+    const numero = guestPhoneToCL(el("gPhone").value);
     const plate = normPlate(el("gPlate").value);
     const sector = String(el("gSector").value || "").trim();
     const out = el("gMsg");
 
     if (!name) return (out.innerHTML = `<span class="warn">⚠️ Falta nombre.</span>`);
-    const numero = formatGuestPhoneToE164CL(phoneRaw);
     if (!numero) return (out.innerHTML = `<span class="warn">⚠️ Teléfono inválido. Debe ser 9 dígitos y comenzar con 9.</span>`);
     if (!plate) return (out.innerHTML = `<span class="warn">⚠️ Falta patente.</span>`);
     if (!sector) return (out.innerHTML = `<span class="warn">⚠️ Selecciona un sector.</span>`);
 
-    out.textContent = "Ingresando como visita…";
+    out.textContent = "Registrando…";
+    el("gSave").disabled = true;
 
     try {
-      // 1) Login anónimo
-      const cred = await signInAnonymously(auth);
-      const user = cred.user;
+      const docId = `GUEST_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
-      // 2) Crear doc en users_guest/{uid}
-      const profile = {
-        uid: user.uid,
+      await setDoc(doc(db, COL_USERS_GUEST, docId), {
         name,
-        numero,            // ✅ +56XXXXXXXXX
-        plates: [plate],   // ✅ array
+        numero,          // ✅ +56XXXXXXXXX
+        plates: [plate], // ✅ array
         sector,
-        createdAt: serverTimestamp(),
-        source: "guest_register"
-      };
+        createdAt: serverTimestamp()
+      });
 
-      await setDoc(doc(db, COL_USERS_GUEST, user.uid), profile);
-
-      out.innerHTML = `<span class="ok">✅ Listo. Entrando…</span>`;
-      await renderApp(user); // entra a la app
+      // ✅ Mensaje + volver al inicio
+      out.innerHTML = `<span class="ok">✅ Visitante registrado</span>`;
+      setTimeout(() => renderLanding({ defaultTab: "login" }), 1200);
     } catch (e) {
       console.error(e);
+      el("gSave").disabled = false;
+
       const code = e?.code || "";
       const msg = e?.message || "";
-
-      let nice = "❌ No pude entrar como visita.";
-      if (code === "auth/admin-restricted-operation") {
-        nice = "❌ Anonymous está restringido por el proyecto (admin-restricted-operation). Debes habilitar/permitir Anonymous en Auth/Identity Platform.";
-      } else if (code === "auth/operation-not-allowed") {
-        nice = "❌ Anonymous no está habilitado. Actívalo en Firebase Auth → Sign-in method → Anonymous.";
-      }
-
       out.innerHTML =
-        `<span class="warn">${escapeHtml(nice)}</span>` +
+        `<span class="warn">❌ No pude registrar la visita.</span>` +
         `<div class="muted" style="margin-top:6px;font-size:12px">${escapeHtml(code)}<br>${escapeHtml(msg)}</div>`;
     }
   };
