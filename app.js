@@ -318,6 +318,14 @@ async function findUserByPlate(plate) {
   const d = snap.docs[0];
   return { id: d.id, ...d.data() };
 }
+// Buscar VISITA por patente (users_guest.plates array-contains)
+async function findGuestByPlate(plate) {
+  const qy = query(collection(db, COL_USERS_GUEST), where("plates", "array-contains", plate));
+  const snap = await getDocs(qy);
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  return { id: d.id, ...d.data(), __kind: "guest" };
+}
 
 // Checkin de hoy por uid
 async function getTodayCheckinByUid(uid) {
@@ -1001,69 +1009,121 @@ async function renderApp(user) {
   el("btnSearch").onclick = async () => {
     const plate = normPlate(el("searchPlate").value);
     const out = el("searchRes");
+  
     if (!plate) {
       out.innerHTML = `<div class="badge warn">⚠️ Escribe una patente.</div>`;
       return;
     }
+  
     out.innerHTML = `<div class="muted">Buscando…</div>`;
-
+  
     try {
-      const found = await findUserByPlate(plate);
-
-      if (!found || !isUserActive(found)) {
-        out.innerHTML = `<div class="badge warn">⚠️ No encontré esa patente (o el usuario no está autorizado).</div>`;
+      // 1) Buscar en FUNCIONARIOS (users)
+      let found = await findUserByPlate(plate);
+  
+      // Si existe pero no está activo => lo ignoramos y buscamos en visitas
+      if (found && !isUserActive(found)) found = null;
+  
+      // 2) Si no hay funcionario activo, buscar en VISITAS (users_guest)
+      let guest = null;
+      if (!found) {
+        // Requiere que tengas: const COL_USERS_GUEST = "users_guest";
+        // y que exista la colección en Firestore
+        const qg = query(collection(db, COL_USERS_GUEST), where("plates", "array-contains", plate));
+        const sg = await getDocs(qg);
+        if (!sg.empty) {
+          const d = sg.docs[0];
+          guest = { id: d.id, ...d.data() };
+        }
+      }
+  
+      // 3) Si no existe en ninguno
+      if (!found && !guest) {
+        out.innerHTML = `<div class="badge warn">⚠️ No encontré esa patente.</div>`;
         return;
       }
-
-      const name = found.name || "(sin nombre)";
-      const phone = found.phone || "";
-      const habitual = found.sector || found.unit || "(sin sector)";
-      const plates = Array.isArray(found.plates) ? found.plates : [];
-      const foundUid = found.uid || null;
-
-      let todayCI = null;
-      if (foundUid) todayCI = await getTodayCheckinByUid(foundUid);
-
-      const sectorHoy = (todayCI?.sectorToday || todayCI?.unitToday || "").trim();
-      const showHoy = sectorHoy && sectorHoy.toLowerCase() !== String(habitual).toLowerCase();
-
-      const msg = `Hola ${name}. Te contacto por la app Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
-      const wa = whatsappLink(phone, msg);
-
+  
+      // ===========================
+      // ✅ Render FUNCIONARIO (users)
+      // ===========================
+      if (found) {
+        const name = found.name || "(sin nombre)";
+        const phone = found.phone || "";
+        const habitual = found.sector || found.unit || "(sin sector)";
+        const plates = Array.isArray(found.plates) ? found.plates : [];
+        const foundUid = found.uid || null;
+  
+        let todayCI = null;
+        if (foundUid) todayCI = await getTodayCheckinByUid(foundUid);
+  
+        const sectorHoy = (todayCI?.sectorToday || todayCI?.unitToday || "").trim();
+        const showHoy = sectorHoy && sectorHoy.toLowerCase() !== String(habitual).toLowerCase();
+  
+        const msg = `Hola ${name}. Te contacto por la app Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
+        const wa = whatsappLink(phone, msg);
+  
+        out.innerHTML = `
+          <div style="font-weight:900;font-size:20px">${escapeHtml(name)}</div>
+          <div class="muted" style="margin-top:4px">📞 ${escapeHtml(phone || "(sin teléfono)")}</div>
+  
+          <div class="muted" style="margin-top:4px">
+            🏥 Habitual: <b>${escapeHtml(habitual)}</b>
+          </div>
+  
+          ${
+            showHoy
+              ? `<div class="badge warn" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
+              : sectorHoy
+                ? `<div class="badge ok" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
+                : `<div class="badge" style="margin-top:10px">📍 Hoy: sin check-in</div>`
+          }
+  
+          <div class="muted" style="margin-top:10px">
+            Patentes registradas:
+            <div>${plates.map(p => `<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
+          </div>
+  
+          ${
+            wa
+              ? `<a href="${wa}" target="_blank" style="text-decoration:none">
+                   <button class="btn" style="width:100%;margin-top:12px">📲 Enviar WhatsApp</button>
+                 </a>`
+              : `<div class="badge warn" style="margin-top:12px">⚠️ No puedo armar WhatsApp: falta teléfono.</div>`
+          }
+        `;
+        return;
+      }
+  
+      // ===========================
+      // 👥 Render VISITA (users_guest)
+      // ===========================
+      const gName = guest?.name || "(sin nombre)";
+      const gNumero = guest?.numero || "";   // +56XXXXXXXXX
+      const gSector = guest?.sector || "(sin sector)";
+      const gPlates = Array.isArray(guest?.plates) ? guest.plates : [];
+  
       out.innerHTML = `
-        <div style="font-weight:900;font-size:20px">${escapeHtml(name)}</div>
-        <div class="muted" style="margin-top:4px">📞 ${escapeHtml(phone || "(sin teléfono)")}</div>
-
-        <div class="muted" style="margin-top:4px">
-          🏥 Habitual: <b>${escapeHtml(habitual)}</b>
-        </div>
-
-        ${
-          showHoy
-            ? `<div class="badge warn" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
-            : sectorHoy
-              ? `<div class="badge ok" style="margin-top:10px">📍 Hoy hizo check-in en: <b>${escapeHtml(sectorHoy)}</b></div>`
-              : `<div class="badge" style="margin-top:10px">📍 Hoy: sin check-in</div>`
-        }
-
+        <div class="badge ok">👥 Patente encontrada en <b>Visitas</b></div>
+  
+        <div style="font-weight:900;font-size:20px;margin-top:10px">${escapeHtml(gName)}</div>
+        <div class="muted" style="margin-top:4px">📞 ${escapeHtml(gNumero || "(sin teléfono)")}</div>
+        <div class="muted" style="margin-top:4px">🏥 Sector: <b>${escapeHtml(gSector)}</b></div>
+  
         <div class="muted" style="margin-top:10px">
           Patentes registradas:
-          <div>${plates.map(p => `<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
+          <div>${gPlates.map(p => `<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
         </div>
-
-        ${
-          wa
-            ? `<a href="${wa}" target="_blank" style="text-decoration:none">
-                 <button class="btn" style="width:100%;margin-top:12px">📲 Enviar WhatsApp</button>
-               </a>`
-            : `<div class="badge warn" style="margin-top:12px">⚠️ No puedo armar WhatsApp: falta teléfono.</div>`
-        }
+  
+        <div class="badge warn" style="margin-top:12px">
+          ⚠️ Registro de visita (sin cuenta). No hay check-in.
+        </div>
       `;
     } catch (e) {
       console.error(e);
       out.innerHTML = `<div class="badge warn">❌ Error buscando (revisa Console/Rules).</div>`;
     }
   };
+  
 
   // Check-in hoy
   el("btnCheckin").onclick = async () => {
