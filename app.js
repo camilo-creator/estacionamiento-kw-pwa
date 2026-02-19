@@ -1114,9 +1114,6 @@ async function renderApp(user) {
           <div>${gPlates.map(p => `<span class="pill">${escapeHtml(p)}</span>`).join("")}</div>
         </div>
   
-        <div class="badge warn" style="margin-top:12px">
-          ⚠️ Registro de visita (sin cuenta). No hay check-in.
-        </div>
       `;
     } catch (e) {
       console.error(e);
