@@ -869,7 +869,7 @@ async function renderApp(user) {
       const sectorHoy = (todayCI?.sectorToday || todayCI?.unitToday || "").trim();
       const showHoy = sectorHoy && sectorHoy.toLowerCase() !== String(habitual).toLowerCase();
 
-      const msg = `Hola ${name}. Te contacto por Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
+      const msg = `Hola ${name}. Te contacto por la app Estacionamiento CESFAM: tu vehículo (${plate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
       const wa = whatsappLink(phone, msg);
 
       out.innerHTML = `
@@ -944,36 +944,97 @@ async function renderApp(user) {
     }
   };
 
-  // Agregar bloqueo
-  el("btnAddBlock").onclick = async () => {
-    const blockerPlate = normPlate(el("blockerPlate").value);
-    const blockedPlate = normPlate(el("blockedPlate").value);
-    const out = el("blocksRes");
+ // Agregar bloqueo + WhatsApp automático al bloqueado
+el("btnAddBlock").onclick = async () => {
+  const blockerPlate = normPlate(el("blockerPlate").value);
+  const blockedPlate = normPlate(el("blockedPlate").value);
+  const out = el("blocksRes");
 
-    if (!blockerPlate || !blockedPlate) {
-      out.innerHTML = `<div class="badge warn">⚠️ Falta mi patente o la bloqueada.</div>`;
+  if (!blockerPlate || !blockedPlate) {
+    out.innerHTML = `<div class="badge warn">⚠️ Falta mi patente o la bloqueada.</div>`;
+    return;
+  }
+
+  out.innerHTML = `<div class="muted">Guardando…</div>`;
+
+  try {
+    // 1) Guardar bloqueo
+    await addDoc(collection(db, COL_BLOCKS), {
+      blockerUid: uid,
+      blockerEmail: email,
+      blockerPlate,
+      blockedPlate,
+      date: todayStr(),
+      ts: serverTimestamp()
+    });
+
+    // 2) Buscar dueño del vehículo bloqueado en users (plates array-contains)
+    const qy = query(collection(db, "users"), where("plates", "array-contains", blockedPlate));
+    const snap = await getDocs(qy);
+
+    if (snap.empty) {
+      out.innerHTML = `
+        <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
+        <div class="badge warn" style="margin-top:8px;">⚠️ No encontré a quién pertenece ${escapeHtml(blockedPlate)} (no está en users.plates).</div>
+      `;
+      el("blockedPlate").value = "";
       return;
     }
 
-    out.innerHTML = `<div class="muted">Guardando…</div>`;
+    const target = snap.docs[0].data();
+    const name = target.name || "hola";
+    const phone = target.phone || "";
+    const sector = target.sector || "";
 
-    try {
-      await addDoc(collection(db, COL_BLOCKS), {
-        blockerUid: uid,
-        blockerEmail: email,
-        blockerPlate,
-        blockedPlate,
-        date: todayStr(),
-        ts: serverTimestamp()
-      });
+    // 3) Armar WhatsApp
+    const msg = `Hola ${name}. Te contacto por la app Estacionamiento KW: tu vehículo (${blockedPlate}) está bloqueando mi salida. ¿Puedes moverlo por favor? Gracias.`;
 
-      out.innerHTML = `<div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>`;
-      el("blockedPlate").value = "";
-    } catch (e) {
-      console.error(e);
-      out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
+    // Normaliza teléfono Chile a 56XXXXXXXXX
+    let p = String(phone).replace(/\D/g, "");
+    if (p.startsWith("56")) {
+      // ok
+    } else if (p.length === 9 && p.startsWith("9")) {
+      p = "56" + p;
     }
-  };
+
+    if (!p || p.length < 11) {
+      out.innerHTML = `
+        <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
+        <div style="margin-top:10px;">
+          <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
+          <div>📞 ${escapeHtml(String(phone || "(sin teléfono)"))}</div>
+          <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
+          <div class="badge warn" style="margin-top:8px;">⚠️ No puedo abrir WhatsApp porque el teléfono está vacío o inválido.</div>
+        </div>
+      `;
+      el("blockedPlate").value = "";
+      return;
+    }
+
+    const wa = `https://wa.me/${p}?text=${encodeURIComponent(msg)}`;
+
+    out.innerHTML = `
+      <div class="badge ok">✅ Bloqueo agregado: ${escapeHtml(blockerPlate)} → <b>${escapeHtml(blockedPlate)}</b></div>
+      <div style="margin-top:10px;">
+        <div><b>${escapeHtml(target.name || "(sin nombre)")}</b></div>
+        <div>📞 ${escapeHtml(String(phone))}</div>
+        <div>🏥 ${escapeHtml(String(sector || "(sin sector)"))}</div>
+        <a class="wa" href="${wa}" target="_blank" rel="noopener">
+          <button>📲 Enviar WhatsApp ahora</button>
+        </a>
+      </div>
+    `;
+
+    // 4) Auto-abrir WhatsApp (en iPhone puede abrir en nueva pestaña; si lo bloquea igual queda el botón)
+    window.open(wa, "_blank");
+
+    el("blockedPlate").value = "";
+  } catch (e) {
+    console.error(e);
+    out.innerHTML = `<div class="badge warn">❌ No pude guardar bloqueo (Rules).</div>`;
+  }
+};
+
 
   // Ver bloqueos de hoy
   el("btnListBlocks").onclick = async () => {
