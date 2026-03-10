@@ -1198,7 +1198,7 @@ async function renderApp(user) {
       const phone = target.phone || "";
       const sector = target.sector || target.unit || "";
 
-      const msg = `Hola ${name}. Soy Camilin. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contáctame si necesitas salir.`;
+      const msg = `Hola ${name}. Te contacto por la app Estacionamiento KW: estoy bloqueando tu vehículo (${blockedPlate}). Contáctame si necesitas salir.`;
       const wa = whatsappLink(phone, msg);
 
       if (!wa) {
