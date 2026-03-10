@@ -494,7 +494,7 @@ function renderForgotPassword() {
     <div class="wrap">
       <div class="card">
         <div class="titleRow"><div style="font-size:20px">🔐</div><h3>Recuperar contraseña</h3></div>
-        <div class="muted">Te enviaremos un correo para restablecer tu clave.</div>
+        <div class="muted">Te enviaremos un correo para restablecer tu clave (busca en spam).</div>
 
         <label>Correo</label>
         <input id="fpEmail" type="email" placeholder="tu@email.cl" />
