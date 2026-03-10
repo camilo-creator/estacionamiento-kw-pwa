@@ -371,7 +371,7 @@ function renderLanding({ defaultTab = "login" } = {}) {
 
         <div class="mini">
           <button id="btnForgot" class="btn link">¿Olvidaste tu contraseña?</button>
-          <button id="btnVisitor" class="btn link">👥 Entrar como visita</button>
+          <button id="btnVisitor" class="btn link">👥 Soy visita</button>
         </div>
 
         <div id="msg" class="muted" style="margin-top:10px"></div>
